@@ -1,0 +1,44 @@
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "gdswell"
+version = "0.1.0"
+description = "Chip design package"
+authors = [{name = "Helge Gehring"}, {name = "Simon Bilodeau"}]
+requires-python = ">=3.13"
+dependencies = [
+    "klayout>=0.30.7",
+    "numpy>=2.4.3",
+    "sympy>=1.14.0",
+]
+license = { file = "LICENSE" }
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.1",
+    "ruff>=0.15.6",
+    "ty>=0.0.1",
+    "jupytext",
+    "jupyter",
+    "mystmd",
+    "rust-just",
+    "matplotlib",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

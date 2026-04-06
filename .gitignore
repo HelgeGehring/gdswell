@@ -1,0 +1,27 @@
+# Virtual environment
+.venv/
+
+# Python artifacts
+__pycache__/
+
+# Testing
+.pytest_cache/
+
+# Output files
+*.gds
+*.png
+*.log
+
+# Library cache
+.gdswell_cache/
+
+
+# Jupyter
+*.ipynb
+.ipynb_checkpoints/
+.jupyter_cache/
+
+# MyST build outputs
+_build
+
+#gdsfactory/*

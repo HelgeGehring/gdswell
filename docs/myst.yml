@@ -1,0 +1,17 @@
+version: 1
+project:
+  title: gdswell
+  description: High-Performance Chip Design in Python
+  authors:
+    - name: Helge Gehring
+
+site:
+  template: book-theme
+  options:
+    logo: images/logo.svg
+    favicon: images/logo.svg
+    stylesheets:
+      - custom.css
+  actions:
+    - title: GitHub
+      url: https://github.com/HelgeGehring/gdswell

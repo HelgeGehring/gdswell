@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Run pre-commit
+        run: uv run pre-commit run --all-files
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # - python-version: "3.13"
+          #   freethreaded: false
+          # - python-version: "3.14"
+          #   freethreaded: false
+          - python-version: "3.14"
+            freethreaded: true
+    steps:
+      - uses: actions/checkout@v4
+ 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}${{ matrix.freethreaded && 't' || '' }}
+ 
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+ 
+      - name: Run tests
+        run: ${{ matrix.freethreaded && 'PYTHON_GIL=0 ' || '' }}uv run pytest
+ 
+  prepare-docs:
+    runs-on: ubuntu-latest
+    outputs:
+      files: ${{ steps.set-files.outputs.files }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set-files
+        run: |
+          # Find all .py files in docs/ and docs/examples/, exclude __*
+          FILES=$(find docs -maxdepth 2 -name "*.py" ! -name "__*" | jq -R -s -c 'split("\n")[:-1]')
+          echo "files=$FILES" >> $GITHUB_OUTPUT
+
+  build-notebooks:
+    needs: prepare-docs
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        file: ${{ fromJSON(needs.prepare-docs.outputs.files) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.14"
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+      - name: Register kernel
+        run: uv run python -m ipykernel install --user --name python3
+      - name: Execute notebook
+        id: exec
+        run: |
+          # Convert and execute
+          uv run jupytext "${{ matrix.file }}" --to ipynb --execute --set-kernel python3
+          # Output the ipynb path for the upload step
+          IPYNB=$(echo "${{ matrix.file }}" | sed 's/\.py$/\.ipynb/')
+          echo "ipynb=$IPYNB" >> $GITHUB_OUTPUT
+      - name: Upload notebook
+        uses: actions/upload-artifact@v4
+        with:
+          name: notebook-${{ strategy.job-index }}
+          path: ${{ steps.exec.outputs.ipynb }}
+
+  build-site:
+    needs: build-notebooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.14"
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+      - name: Download notebooks
+        uses: actions/download-artifact@v4
+        with:
+          pattern: notebook-*
+          merge-multiple: true
+      - name: Build documentation
+        run: uv run myst build
