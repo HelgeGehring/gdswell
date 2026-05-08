@@ -474,3 +474,30 @@ def test_top_level_exports():
     assert gw.StackupEntry is StackupEntry
     assert gw.Stackup is Stackup
     assert gw.ResolvedPrism is ResolvedPrism
+
+
+def test_resolve_linear_morph_vertex_interpolation():
+    """At an inserted z midway between two original keys the cross-section
+    is the linear-morph average of the two adjacent regions.
+
+    Setup: WG (1µm × 1µm at origin) at z=0; WG.size(-0.2) (0.6µm × 0.6µm
+    centred) at z=1. A disjoint CLAD cut at z=0.5 forces A to be resampled
+    at the midpoint without consuming any of the morphed core. The morphed
+    region's bbox at t=0.5 is the average of the two endpoints — (0.1, 0.1)
+    to (0.9, 0.9) µm = (100, 100) to (900, 900) dbu."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    # CLAD lives far from A's region so the cut doesn't carve into the morph.
+    cell.add_polygon([(2, 2), (3, 2), (3, 3), (2, 3)], Pdk.CLAD)
+
+    a = StackupEntry("A", {0.0: Pdk.WG, 1.0: Pdk.WG.size(-0.2)})
+    cut = StackupEntry("Cut", {0.5: Pdk.CLAD})
+    [p_a, *_] = (a + cut).resolve(cell)
+    assert p_a.name == "A"
+    assert 0.5 in p_a.z_to_region
+    bbox = p_a.z_to_region[0.5].bbox()
+    assert bbox.left == 100
+    assert bbox.bottom == 100
+    assert bbox.right == 900
+    assert bbox.top == 900
