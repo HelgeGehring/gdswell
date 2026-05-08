@@ -466,3 +466,10 @@ def test_resolve_single_key_zero_thickness_sheet_preserved():
     [p] = Stackup.of(sheet).resolve(cell)
     assert list(p.z_to_region.keys()) == [0.5]
     assert p.z_to_region[0.5].area() == 1_000_000
+
+
+def test_top_level_exports():
+    import gdswell as gw
+    assert gw.StackupEntry is StackupEntry
+    assert gw.Stackup is Stackup
+    assert gw.ResolvedPrism is ResolvedPrism
