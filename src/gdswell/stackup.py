@@ -242,28 +242,53 @@ class Stackup:
         return f"Stackup([{body}])"
 
     def resolve(self, cell: "gw.Cell") -> list[ResolvedPrism]:
-        """Resolve the stackup against ``cell`` via painter's algorithm.
+        """Resolve the stackup against ``cell`` via painter's algorithm."""
+        if not self.items:
+            return []
 
-        Returns one ``ResolvedPrism`` per surviving entry (``keep=True`` and
-        non-empty). ``mesh_order`` reflects original list position (later =
-        higher priority).
-        """
         # Step 1: materialize each entry's regions at its own keys.
         per_entry: list[dict[float, kdb.Region]] = [
             _materialize(it.entry, cell) for it in self.items
         ]
-        # No cuts / no priority overlay yet — that's Tasks 6 & 7.
+
+        # Step 2: compute the global z-axis (union of all entries' keys).
+        global_zs = sorted({z for regions in per_entry for z in regions})
+
+        # Step 3: re-sample each entry onto every global z that falls in its
+        # own [zmin, zmax] (so cuts can apply uniformly).
+        resampled: list[dict[float, kdb.Region]] = []
+        for regions in per_entry:
+            if not regions:
+                resampled.append({})
+                continue
+            zmin, zmax = min(regions), max(regions)
+            sampled: dict[float, kdb.Region] = {}
+            for z in global_zs:
+                if zmin <= z <= zmax:
+                    sampled[z] = _resample_entry(regions, z)
+            resampled.append(sampled)
+
+        # Step 4: walk in order, painter-style. Each new entry B subtracts
+        # itself from all previously-seen entries A at every shared z.
+        for j in range(len(resampled)):
+            B = resampled[j]
+            for i in range(j):
+                A = resampled[i]
+                for z, regionB in B.items():
+                    if z in A:
+                        A[z] = A[z] - regionB
+
+        # Step 5 & 6: filter keep=False, drop empty, emit ResolvedPrisms.
         out: list[ResolvedPrism] = []
-        for idx, it in enumerate(self.items):
+        for idx, (it, regions) in enumerate(zip(self.items, resampled)):
             if not it.keep:
                 continue
-            regions = per_entry[idx]
             if all(r.is_empty() for r in regions.values()):
                 continue
             out.append(
                 ResolvedPrism(
                     name=it.entry.name,
-                    z_to_region=dict(regions),
+                    z_to_region=regions,
                     mesh_order=idx,
                 )
             )
@@ -288,3 +313,95 @@ class ResolvedPrism:
 def _materialize(entry: StackupEntry, cell: "gw.Cell") -> dict[float, kdb.Region]:
     """Compute the ``kdb.Region`` for every z-key in ``entry``."""
     return {z: L.get_shapes(cell) for z, L in entry.z_to_layer.items()}
+
+
+def _interp_region(r0: kdb.Region, r1: kdb.Region, t: float) -> kdb.Region:
+    """Linear morph between two regions of identical topology.
+
+    Topology must match: same polygon count, and corresponding polygons must
+    have the same point count. We interpolate vertex positions at parameter
+    ``t`` ∈ [0, 1]. Mismatched topology raises ``NotImplementedError``.
+
+    For ``t == 0`` we return ``r0.dup()``, for ``t == 1`` we return ``r1.dup()``
+    (avoiding floating-point drift on exact endpoints).
+    """
+    if t == 0.0:
+        return r0.dup()
+    if t == 1.0:
+        return r1.dup()
+
+    polys0 = list(r0.each())
+    polys1 = list(r1.each())
+    if len(polys0) != len(polys1):
+        raise NotImplementedError(
+            f"Cannot linearly interpolate regions with mismatched topology: "
+            f"{len(polys0)} vs {len(polys1)} polygons. "
+            f"Either keep both z-key layers topology-equivalent (e.g. via "
+            f".size(...)), or split the entry into multiple entries."
+        )
+
+    out = kdb.Region()
+    for p0, p1 in zip(polys0, polys1):
+        hull0 = list(p0.each_point_hull())
+        hull1 = list(p1.each_point_hull())
+        if len(hull0) != len(hull1):
+            raise NotImplementedError(
+                f"Cannot linearly interpolate polygons with mismatched topology: "
+                f"{len(hull0)} vs {len(hull1)} hull points."
+            )
+        # holes must also match in count
+        nholes0, nholes1 = p0.holes(), p1.holes()
+        if nholes0 != nholes1:
+            raise NotImplementedError(
+                f"Cannot linearly interpolate polygons with mismatched hole "
+                f"counts: {nholes0} vs {nholes1}."
+            )
+        morphed_hull = [
+            kdb.Point(
+                int(round(a.x + (b.x - a.x) * t)),
+                int(round(a.y + (b.y - a.y) * t)),
+            )
+            for a, b in zip(hull0, hull1)
+        ]
+        morphed = kdb.Polygon(morphed_hull)
+        for h in range(nholes0):
+            holes0 = list(p0.each_point_hole(h))
+            holes1 = list(p1.each_point_hole(h))
+            if len(holes0) != len(holes1):
+                raise NotImplementedError(
+                    f"Cannot linearly interpolate hole {h} with mismatched "
+                    f"point counts: {len(holes0)} vs {len(holes1)}."
+                )
+            morphed.insert_hole(
+                [
+                    kdb.Point(
+                        int(round(a.x + (b.x - a.x) * t)),
+                        int(round(a.y + (b.y - a.y) * t)),
+                    )
+                    for a, b in zip(holes0, holes1)
+                ]
+            )
+        out.insert(morphed)
+    return out
+
+
+def _resample_entry(
+    z_to_region: dict[float, kdb.Region], z: float
+) -> kdb.Region:
+    """Return the entry's region at z. Strictly inside the entry's range, the
+    region is interpolated between adjacent original keys (linear morph).
+
+    The caller must ensure ``min(keys) <= z <= max(keys)``; otherwise this
+    returns an empty region (entry has no volume there).
+    """
+    keys = sorted(z_to_region.keys())
+    if z < keys[0] or z > keys[-1]:
+        return kdb.Region()
+    if z in z_to_region:
+        return z_to_region[z].dup()
+    # find bracketing keys
+    for k0, k1 in zip(keys, keys[1:]):
+        if k0 <= z <= k1:
+            t = (z - k0) / (k1 - k0)
+            return _interp_region(z_to_region[k0], z_to_region[k1], t)
+    return kdb.Region()  # unreachable

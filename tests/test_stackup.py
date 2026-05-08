@@ -304,3 +304,96 @@ def test_entry_resolve_via_stackup_singleton():
     assert len(prisms) == 1
     assert prisms[0].name == "Si"
     assert set(prisms[0].z_to_region.keys()) == {0.0, 0.22}
+
+
+def _cell_with_overlap():
+    """1x1 square on WG at origin; bigger 2x2 square on CLAD covering it."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(-1, -1), (1, -1), (1, 1), (-1, 1)], Pdk.CLAD)
+    return cell
+
+
+def test_resolve_later_wins_at_shared_z():
+    """Two entries with the same z-range overlapping in plan view: later wins."""
+    cell = _cell_with_overlap()
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    prisms = (a + b).resolve(cell)
+    by_name = {p.name: p for p in prisms}
+    # B's region at z=0 is the full 2x2 square (4 µm² = 4_000_000 dbu²).
+    # A's region at z=0, post-overlay, is WG minus CLAD — the WG square is
+    # entirely covered by the CLAD 2x2, so A becomes empty and is pruned.
+    assert "B" in by_name
+    assert "A" not in by_name
+    # B's area is unchanged.
+    assert by_name["B"].z_to_region[0.0].area() == 4_000_000
+
+
+def test_resolve_partial_overlap_carves_earlier_entry():
+    """A's plan-view region is partially covered by B; A keeps the remainder."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    # A: 2x1 strip on WG from x=0 to x=2
+    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], Pdk.WG)
+    # B: 1x1 strip on CLAD from x=1 to x=2 (covers right half of A)
+    cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], Pdk.CLAD)
+
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    prisms = (a + b).resolve(cell)
+    by_name = {p.name: p for p in prisms}
+    # A keeps the left half (1 µm² = 1_000_000 dbu²)
+    assert by_name["A"].z_to_region[0.0].area() == 1_000_000
+    # B is unchanged (1 µm²)
+    assert by_name["B"].z_to_region[0.0].area() == 1_000_000
+
+
+def test_resolve_cut_introduces_global_z_keys_via_morph():
+    """A's z=[0,1] is cut by B at z=[0.3,0.6]. After painter's algorithm A
+    has new z-keys at 0.3 and 0.6 (linear-morph topology preserved here
+    because both layers are simple ``Layer`` rectangles)."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    # A and B both project to the same 2x2 square (so subtraction is exact)
+    cell.add_polygon([(0, 0), (2, 0), (2, 2), (0, 2)], Pdk.WG)
+    cell.add_polygon([(0, 0), (2, 0), (2, 2), (0, 2)], Pdk.CLAD)
+
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.3, 0.6)
+    prisms = (a + b).resolve(cell)
+    by_name = {p.name: p for p in prisms}
+
+    # A has gained z-keys at 0.3 and 0.6 (the cut's range).
+    a_keys = sorted(by_name["A"].z_to_region.keys())
+    assert a_keys == [0.0, 0.3, 0.6, 1.0]
+
+    # At z=0.0, A is unchanged (full 2x2 = 4e6 dbu²).
+    assert by_name["A"].z_to_region[0.0].area() == 4_000_000
+    # At z=0.3 and z=0.6, A is fully cut by B (empty).
+    assert by_name["A"].z_to_region[0.3].area() == 0
+    assert by_name["A"].z_to_region[0.6].area() == 0
+    # At z=1.0, A is unchanged again.
+    assert by_name["A"].z_to_region[1.0].area() == 4_000_000
+
+
+def test_resolve_topology_mismatch_raises_on_resample():
+    """Entry's two z-key regions have different topology; a cut forces
+    resampling at an intermediate z, which raises NotImplementedError."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    # WG has a 1x1 square; CLAD has two disjoint squares (different topology)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.CLAD)
+    cell.add_polygon([(2, 0), (3, 0), (3, 1), (2, 1)], Pdk.CLAD)
+
+    a = StackupEntry("A", {0.0: Pdk.WG, 1.0: Pdk.CLAD})  # 1 polygon → 2 polygons
+    b = StackupEntry.uniform("B", Pdk.MASK, 0.5, 0.7)
+    # If MASK is empty in this cell, the cut is trivial and no resample needed.
+    # Add a MASK polygon to force the cut to actually do work.
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.MASK)
+
+    import pytest
+    with pytest.raises(NotImplementedError, match="topology"):
+        (a + b).resolve(cell)
