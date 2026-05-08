@@ -32,9 +32,7 @@ class StackupEntry:
             raise ValueError("StackupEntry.z_to_layer must have at least one key")
 
     @classmethod
-    def uniform(
-        cls, name: str, layer: LayerBase, zmin: float, zmax: float
-    ) -> StackupEntry:
+    def uniform(cls, name: str, layer: LayerBase, zmin: float, zmax: float) -> StackupEntry:
         """Convenience: 2-key entry with the same layer at zmin and zmax."""
         return cls(name=name, z_to_layer={zmin: layer, zmax: layer})
 
@@ -184,9 +182,7 @@ class Stackup:
 
     def map_layers(self, fn: Callable[[LayerBase], LayerBase]) -> Stackup:
         return Stackup(
-            items=tuple(
-                StackupItem(it.entry.map_layers(fn), it.keep) for it in self.items
-            )
+            items=tuple(StackupItem(it.entry.map_layers(fn), it.keep) for it in self.items)
         )
 
     def size(self, dx: float, dy: float | None = None) -> Stackup:
@@ -230,15 +226,11 @@ class Stackup:
 
     @property
     def _hash_string(self) -> str:
-        body = ",".join(
-            f"{'+' if it.keep else '-'}{it.entry._hash_string}" for it in self.items
-        )
+        body = ",".join(f"{'+' if it.keep else '-'}{it.entry._hash_string}" for it in self.items)
         return f"Stackup({body})"
 
     def __repr__(self) -> str:
-        body = ", ".join(
-            f"{'+' if it.keep else '-'}{it.entry!r}" for it in self.items
-        )
+        body = ", ".join(f"{'+' if it.keep else '-'}{it.entry!r}" for it in self.items)
         return f"Stackup([{body}])"
 
     def resolve(self, cell: "gw.Cell") -> list[ResolvedPrism]:
@@ -385,9 +377,7 @@ def _interp_region(r0: kdb.Region, r1: kdb.Region, t: float) -> kdb.Region:
     return out
 
 
-def _resample_entry(
-    z_to_region: dict[float, kdb.Region], z: float
-) -> kdb.Region:
+def _resample_entry(z_to_region: dict[float, kdb.Region], z: float) -> kdb.Region:
     """Return the entry's region at z. Strictly inside the entry's range, the
     region is interpolated between adjacent original keys (linear morph).
 

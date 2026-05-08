@@ -1,9 +1,24 @@
 # Copyright 2026 Helge Gehring, Simon Bilodeau and contributors.
 # Licensed under the Apache License, Version 2.0.
+import dataclasses
 from enum import Enum
 
+import klayout.db as kdb
+import pytest
+
 import gdswell as gw
-from gdswell.stackup import StackupEntry
+from gdswell.layer import (
+    LayerBBox,
+    LayerInside,
+    LayerInteracting,
+    LayerNotInteracting,
+    LayerOutside,
+    LayerOverlapping,
+    LayerRounded,
+    LayerSize,
+    LayerTransformed,
+)
+from gdswell.stackup import ResolvedPrism, Stackup, StackupEntry, StackupItem
 
 
 class Pdk(gw.Layer, Enum):
@@ -45,9 +60,6 @@ def test_entry_hash_string_deterministic():
     b = StackupEntry("Si", {0.22: Pdk.WG.size(-0.05), 0.0: Pdk.WG})
     assert a._hash_string == b._hash_string
     assert "Si" in a._hash_string
-
-
-from gdswell.stackup import Stackup, StackupItem
 
 
 def _e(name, *zs):
@@ -102,12 +114,18 @@ def test_stackup_painters_order_with_parentheses():
     a, b, c, d = (_e(n, 0.0, 1.0) for n in "ABCD")
     flat = (a + b) - c + d
     assert [(it.entry.name, it.keep) for it in flat.items] == [
-        ("A", True), ("B", True), ("C", False), ("D", True)
+        ("A", True),
+        ("B", True),
+        ("C", False),
+        ("D", True),
     ]
     nested = a + (b - c) + d
     # Same flat tuple — left-to-right associativity makes this equivalent here.
     assert [(it.entry.name, it.keep) for it in nested.items] == [
-        ("A", True), ("B", True), ("C", False), ("D", True)
+        ("A", True),
+        ("B", True),
+        ("C", False),
+        ("D", True),
     ]
 
 
@@ -119,11 +137,6 @@ def test_stackup_hash_order_sensitive():
 def test_stackup_hash_string_includes_keep_flag():
     a, b = _e("A", 0.0, 1.0), _e("B", 0.0, 1.0)
     assert (a - b)._hash_string != (a + b)._hash_string
-
-
-import klayout.db as kdb
-
-from gdswell.layer import LayerSize, LayerTransformed, LayerRounded, LayerBBox
 
 
 def test_entry_size_wraps_every_layer():
@@ -181,7 +194,9 @@ def test_stackup_size_applies_to_all_entries_including_cuts():
     c = StackupEntry.uniform("C", Pdk.MASK, 0.0, 1.0)
     stack = (a + b - c).size(0.1)
     assert [(it.entry.name, it.keep) for it in stack.items] == [
-        ("A", True), ("B", True), ("C", False)
+        ("A", True),
+        ("B", True),
+        ("C", False),
     ]
     for it in stack.items:
         for L in it.entry.z_to_layer.values():
@@ -198,15 +213,6 @@ def test_stackup_map_layers_passthrough():
         for L in it.entry.z_to_layer.values():
             assert isinstance(L, LayerSize)
             assert L.dx == 0.5
-
-
-from gdswell.layer import (
-    LayerInteracting,
-    LayerNotInteracting,
-    LayerInside,
-    LayerOutside,
-    LayerOverlapping,
-)
 
 
 def test_entry_filters_wrap_every_layer():
@@ -243,9 +249,6 @@ def test_stackup_filters_apply_to_all_entries():
             assert isinstance(L, LayerInside)
 
 
-from gdswell.stackup import ResolvedPrism
-
-
 def _cell_with_two_squares():
     """A cell with a 1x1 µm square on Pdk.WG at origin, and another on Pdk.CLAD shifted right."""
     layout = gw.Layout()
@@ -280,8 +283,6 @@ def test_resolve_non_overlapping_entries():
 
 
 def test_resolve_returns_frozen_dataclass():
-    import dataclasses
-
     cell = _cell_with_two_squares()
     si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 1.0)
     other = StackupEntry.uniform("Other", Pdk.CLAD, 2.0, 3.0)
@@ -394,7 +395,6 @@ def test_resolve_topology_mismatch_raises_on_resample():
     # Add a MASK polygon to force the cut to actually do work.
     cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.MASK)
 
-    import pytest
     with pytest.raises(NotImplementedError, match="topology"):
         (a + b).resolve(cell)
 
@@ -403,7 +403,7 @@ def test_resolve_keep_false_cuts_but_does_not_appear():
     """A - B: B cuts A but is dropped from output."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], Pdk.WG)    # A's projection
+    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], Pdk.WG)  # A's projection
     cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], Pdk.CLAD)  # B's projection (right half)
 
     a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
@@ -470,6 +470,7 @@ def test_resolve_single_key_zero_thickness_sheet_preserved():
 
 def test_top_level_exports():
     import gdswell as gw
+
     assert gw.StackupEntry is StackupEntry
     assert gw.Stackup is Stackup
     assert gw.ResolvedPrism is ResolvedPrism
