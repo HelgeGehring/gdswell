@@ -69,6 +69,20 @@ class StackupEntry:
     def bbox(self) -> StackupEntry:
         return self.map_layers(lambda L: L.bbox())
 
+    def interacting(self, other: LayerBase, *, invert: bool = False) -> StackupEntry:
+        if invert:
+            return self.map_layers(lambda L: L.not_interacting(other))
+        return self.map_layers(lambda L: L.interacting(other))
+
+    def inside(self, other: LayerBase) -> StackupEntry:
+        return self.map_layers(lambda L: L.inside(other))
+
+    def outside(self, other: LayerBase) -> StackupEntry:
+        return self.map_layers(lambda L: L.outside(other))
+
+    def overlapping(self, other: LayerBase, min_count: int = 1) -> StackupEntry:
+        return self.map_layers(lambda L: L.overlapping(other, min_count))
+
     # --- equality / hashing ---------------------------------------------------
 
     def _sorted_items(self) -> tuple[tuple[float, LayerBase], ...]:
@@ -182,6 +196,23 @@ class Stackup:
 
     def bbox(self) -> Stackup:
         return self.map_layers(lambda L: L.bbox())
+
+    def interacting(self, other: LayerBase, *, invert: bool = False) -> Stackup:
+        return Stackup(
+            items=tuple(
+                StackupItem(it.entry.interacting(other, invert=invert), it.keep)
+                for it in self.items
+            )
+        )
+
+    def inside(self, other: LayerBase) -> Stackup:
+        return self.map_layers(lambda L: L.inside(other))
+
+    def outside(self, other: LayerBase) -> Stackup:
+        return self.map_layers(lambda L: L.outside(other))
+
+    def overlapping(self, other: LayerBase, min_count: int = 1) -> Stackup:
+        return self.map_layers(lambda L: L.overlapping(other, min_count))
 
     # --- equality / hashing --------------------------------------------------
 

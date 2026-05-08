@@ -198,3 +198,46 @@ def test_stackup_map_layers_passthrough():
         for L in it.entry.z_to_layer.values():
             assert isinstance(L, LayerSize)
             assert L.dx == 0.5
+
+
+from gdswell.layer import (
+    LayerInteracting,
+    LayerNotInteracting,
+    LayerInside,
+    LayerOutside,
+    LayerOverlapping,
+)
+
+
+def test_entry_filters_wrap_every_layer():
+    e = StackupEntry.uniform("X", Pdk.WG, 0.0, 1.0)
+
+    inter = e.interacting(Pdk.MASK)
+    for L in inter.z_to_layer.values():
+        assert isinstance(L, LayerInteracting)
+
+    not_inter = e.interacting(Pdk.MASK, invert=True)
+    for L in not_inter.z_to_layer.values():
+        assert isinstance(L, LayerNotInteracting)
+
+    ins = e.inside(Pdk.MASK)
+    for L in ins.z_to_layer.values():
+        assert isinstance(L, LayerInside)
+
+    outs = e.outside(Pdk.MASK)
+    for L in outs.z_to_layer.values():
+        assert isinstance(L, LayerOutside)
+
+    overlap = e.overlapping(Pdk.MASK, min_count=2)
+    for L in overlap.z_to_layer.values():
+        assert isinstance(L, LayerOverlapping)
+        assert L.min_count == 2
+
+
+def test_stackup_filters_apply_to_all_entries():
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    out = (a + b).inside(Pdk.MASK)
+    for it in out.items:
+        for L in it.entry.z_to_layer.values():
+            assert isinstance(L, LayerInside)
