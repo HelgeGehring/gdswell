@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
 
 import klayout.db as kdb
 
 from gdswell.layer import LayerBase
+
+if TYPE_CHECKING:
+    import gdswell as gw
 
 
 @dataclass(frozen=True, eq=False)
@@ -236,3 +240,51 @@ class Stackup:
             f"{'+' if it.keep else '-'}{it.entry!r}" for it in self.items
         )
         return f"Stackup([{body}])"
+
+    def resolve(self, cell: "gw.Cell") -> list[ResolvedPrism]:
+        """Resolve the stackup against ``cell`` via painter's algorithm.
+
+        Returns one ``ResolvedPrism`` per surviving entry (``keep=True`` and
+        non-empty). ``mesh_order`` reflects original list position (later =
+        higher priority).
+        """
+        # Step 1: materialize each entry's regions at its own keys.
+        per_entry: list[dict[float, kdb.Region]] = [
+            _materialize(it.entry, cell) for it in self.items
+        ]
+        # No cuts / no priority overlay yet — that's Tasks 6 & 7.
+        out: list[ResolvedPrism] = []
+        for idx, it in enumerate(self.items):
+            if not it.keep:
+                continue
+            regions = per_entry[idx]
+            if all(r.is_empty() for r in regions.values()):
+                continue
+            out.append(
+                ResolvedPrism(
+                    name=it.entry.name,
+                    z_to_region=dict(regions),
+                    mesh_order=idx,
+                )
+            )
+        return out
+
+
+@dataclass(frozen=True)
+class ResolvedPrism:
+    """The output of ``Stackup.resolve(cell)``: one frozen recipe per surviving entry.
+
+    ``z_to_region`` maps z values (the entry's original keys plus any keys
+    introduced by cuts during resolution) to ``kdb.Region``s, post-cut and
+    post-priority. ``mesh_order`` reflects position in the original Stackup
+    (later = higher priority = larger ``mesh_order``).
+    """
+
+    name: str
+    z_to_region: dict[float, kdb.Region]
+    mesh_order: int
+
+
+def _materialize(entry: StackupEntry, cell: "gw.Cell") -> dict[float, kdb.Region]:
+    """Compute the ``kdb.Region`` for every z-key in ``entry``."""
+    return {z: L.get_shapes(cell) for z, L in entry.z_to_layer.items()}

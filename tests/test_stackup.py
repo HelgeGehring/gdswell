@@ -241,3 +241,66 @@ def test_stackup_filters_apply_to_all_entries():
     for it in out.items:
         for L in it.entry.z_to_layer.values():
             assert isinstance(L, LayerInside)
+
+
+from gdswell.stackup import ResolvedPrism
+
+
+def _cell_with_two_squares():
+    """A cell with a 1x1 µm square on Pdk.WG at origin, and another on Pdk.CLAD shifted right."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(2, 0), (3, 0), (3, 1), (2, 1)], Pdk.CLAD)
+    return cell
+
+
+def test_resolve_non_overlapping_entries():
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    bot = StackupEntry.uniform("Bot", Pdk.CLAD, -1.0, -0.5)  # different z-range, different layer
+    prisms = (si + bot).resolve(cell)
+
+    assert len(prisms) == 2
+    by_name = {p.name: p for p in prisms}
+    assert set(by_name) == {"Si", "Bot"}
+
+    # mesh_order matches list position
+    assert by_name["Si"].mesh_order == 0
+    assert by_name["Bot"].mesh_order == 1
+
+    # Each surviving entry keeps its original z-keys (no cuts forced extra ones).
+    assert set(by_name["Si"].z_to_region.keys()) == {0.0, 0.22}
+    assert set(by_name["Bot"].z_to_region.keys()) == {-1.0, -0.5}
+
+    # Areas are non-empty and in dbu² (klayout uses 1 nm grid by default; 1µm² = 1e6 dbu²).
+    for p in prisms:
+        for r in p.z_to_region.values():
+            assert r.area() > 0
+
+
+def test_resolve_returns_frozen_dataclass():
+    import dataclasses
+
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 1.0)
+    other = StackupEntry.uniform("Other", Pdk.CLAD, 2.0, 3.0)
+    p = (si + other).resolve(cell)[0]
+    assert dataclasses.is_dataclass(p)
+    # frozen → reassignment must raise
+    try:
+        p.name = "nope"
+    except dataclasses.FrozenInstanceError:
+        pass
+    else:
+        raise AssertionError("ResolvedPrism should be frozen")
+
+
+def test_entry_resolve_via_stackup_singleton():
+    """A single StackupEntry, lifted into a 1-item Stackup, resolves cleanly."""
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    prisms = Stackup.of(si).resolve(cell)
+    assert len(prisms) == 1
+    assert prisms[0].name == "Si"
+    assert set(prisms[0].z_to_region.keys()) == {0.0, 0.22}
