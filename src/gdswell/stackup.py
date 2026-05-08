@@ -31,6 +31,20 @@ class StackupEntry:
         """Convenience: 2-key entry with the same layer at zmin and zmax."""
         return cls(name=name, z_to_layer={zmin: layer, zmax: layer})
 
+    # --- algebra -------------------------------------------------------------
+
+    def __add__(self, other: StackupEntry | Stackup) -> Stackup:
+        rhs = Stackup._coerce_items(other, keep=True)
+        if rhs is NotImplemented:
+            return NotImplemented
+        return Stackup(items=(StackupItem(self, True),) + rhs)
+
+    def __sub__(self, other: StackupEntry | Stackup) -> Stackup:
+        rhs = Stackup._coerce_items(other, keep=False)
+        if rhs is NotImplemented:
+            return NotImplemented
+        return Stackup(items=(StackupItem(self, True),) + rhs)
+
     # --- equality / hashing ---------------------------------------------------
 
     def _sorted_items(self) -> tuple[tuple[float, LayerBase], ...]:
@@ -57,3 +71,92 @@ class StackupEntry:
     def __repr__(self) -> str:
         body = ", ".join(f"{z}: {L!r}" for z, L in self._sorted_items())
         return f"StackupEntry({self.name!r}, {{{body}}})"
+
+
+@dataclass(frozen=True)
+class StackupItem:
+    """One slot in a Stackup: an entry plus a ``keep`` flag.
+
+    ``keep=False`` items participate in painter's-algorithm cuts but are
+    dropped from the resolved output.
+    """
+
+    entry: StackupEntry
+    keep: bool
+
+
+@dataclass(frozen=True, eq=False)
+class Stackup:
+    """An ordered list of (entry, keep) items composed by + / -.
+
+    Composition is strict left-to-right (painter's algorithm). Use parentheses
+    for explicit grouping.
+    """
+
+    items: tuple[StackupItem, ...] = ()
+
+    @classmethod
+    def of(cls, *entries: StackupEntry) -> Stackup:
+        return cls(items=tuple(StackupItem(e, True) for e in entries))
+
+    # --- coercion helpers ----------------------------------------------------
+
+    @staticmethod
+    def _coerce_items(other: StackupEntry | Stackup, *, keep: bool) -> tuple[StackupItem, ...]:
+        if isinstance(other, StackupEntry):
+            return (StackupItem(other, keep),)
+        if isinstance(other, Stackup):
+            if keep:
+                return other.items
+            return tuple(StackupItem(it.entry, False) for it in other.items)
+        return NotImplemented  # type: ignore[return-value]
+
+    # --- algebra -------------------------------------------------------------
+
+    def __add__(self, other: StackupEntry | Stackup) -> Stackup:
+        rhs = Stackup._coerce_items(other, keep=True)
+        if rhs is NotImplemented:
+            return NotImplemented
+        return Stackup(items=self.items + rhs)
+
+    def __sub__(self, other: StackupEntry | Stackup) -> Stackup:
+        rhs = Stackup._coerce_items(other, keep=False)
+        if rhs is NotImplemented:
+            return NotImplemented
+        return Stackup(items=self.items + rhs)
+
+    def __radd__(self, other: StackupEntry) -> Stackup:
+        if isinstance(other, StackupEntry):
+            return Stackup(items=(StackupItem(other, True),) + self.items)
+        return NotImplemented
+
+    def __rsub__(self, other: StackupEntry) -> Stackup:
+        if isinstance(other, StackupEntry):
+            return Stackup(
+                items=(StackupItem(other, True),)
+                + tuple(StackupItem(it.entry, False) for it in self.items)
+            )
+        return NotImplemented
+
+    # --- equality / hashing --------------------------------------------------
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Stackup):
+            return False
+        return self.items == other.items
+
+    def __hash__(self) -> int:
+        return hash(tuple((it.entry, it.keep) for it in self.items))
+
+    @property
+    def _hash_string(self) -> str:
+        body = ",".join(
+            f"{'+' if it.keep else '-'}{it.entry._hash_string}" for it in self.items
+        )
+        return f"Stackup({body})"
+
+    def __repr__(self) -> str:
+        body = ", ".join(
+            f"{'+' if it.keep else '-'}{it.entry!r}" for it in self.items
+        )
+        return f"Stackup([{body}])"
