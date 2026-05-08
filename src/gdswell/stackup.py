@@ -2,7 +2,10 @@
 # Licensed under the Apache License, Version 2.0.
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+
+import klayout.db as kdb
 
 from gdswell.layer import LayerBase
 
@@ -44,6 +47,27 @@ class StackupEntry:
         if rhs is NotImplemented:
             return NotImplemented
         return Stackup(items=(StackupItem(self, True),) + rhs)
+
+    # --- layer-recipe operations --------------------------------------------
+
+    def map_layers(self, fn: Callable[[LayerBase], LayerBase]) -> StackupEntry:
+        """Return a new entry with ``fn`` applied to every layer recipe."""
+        return replace(
+            self,
+            z_to_layer={z: fn(L) for z, L in self.z_to_layer.items()},
+        )
+
+    def size(self, dx: float, dy: float | None = None) -> StackupEntry:
+        return self.map_layers(lambda L: L.size(dx, dy))
+
+    def transformed(self, t: kdb.Trans | kdb.DTrans) -> StackupEntry:
+        return self.map_layers(lambda L: L.transformed(t))
+
+    def round_corners(self, r1: float, r2: float, segments: int) -> StackupEntry:
+        return self.map_layers(lambda L: L.round_corners(r1, r2, segments))
+
+    def bbox(self) -> StackupEntry:
+        return self.map_layers(lambda L: L.bbox())
 
     # --- equality / hashing ---------------------------------------------------
 
@@ -137,6 +161,27 @@ class Stackup:
                 + tuple(StackupItem(it.entry, False) for it in self.items)
             )
         return NotImplemented
+
+    # --- layer-recipe operations --------------------------------------------
+
+    def map_layers(self, fn: Callable[[LayerBase], LayerBase]) -> Stackup:
+        return Stackup(
+            items=tuple(
+                StackupItem(it.entry.map_layers(fn), it.keep) for it in self.items
+            )
+        )
+
+    def size(self, dx: float, dy: float | None = None) -> Stackup:
+        return self.map_layers(lambda L: L.size(dx, dy))
+
+    def transformed(self, t: kdb.Trans | kdb.DTrans) -> Stackup:
+        return self.map_layers(lambda L: L.transformed(t))
+
+    def round_corners(self, r1: float, r2: float, segments: int) -> Stackup:
+        return self.map_layers(lambda L: L.round_corners(r1, r2, segments))
+
+    def bbox(self) -> Stackup:
+        return self.map_layers(lambda L: L.bbox())
 
     # --- equality / hashing --------------------------------------------------
 

@@ -119,3 +119,82 @@ def test_stackup_hash_order_sensitive():
 def test_stackup_hash_string_includes_keep_flag():
     a, b = _e("A", 0.0, 1.0), _e("B", 0.0, 1.0)
     assert (a - b)._hash_string != (a + b)._hash_string
+
+
+import klayout.db as kdb
+
+from gdswell.layer import LayerSize, LayerTransformed, LayerRounded, LayerBBox
+
+
+def test_entry_size_wraps_every_layer():
+    e = StackupEntry("Si", {0.0: Pdk.WG, 1.0: Pdk.WG.size(-0.05)})
+    sized = e.size(0.1)
+    assert isinstance(sized, StackupEntry)
+    assert sized.name == "Si"
+    for L in sized.z_to_layer.values():
+        assert isinstance(L, LayerSize)
+    # original is untouched
+    assert all(not isinstance(L, LayerSize) or L.dx == -0.05 for L in e.z_to_layer.values())
+
+
+def test_entry_size_dy_independent():
+    e = StackupEntry.uniform("X", Pdk.WG, 0.0, 1.0)
+    sized = e.size(0.2, 0.3)
+    for L in sized.z_to_layer.values():
+        assert isinstance(L, LayerSize)
+        assert L.dx == 0.2 and L.dy == 0.3
+
+
+def test_entry_transformed_wraps_every_layer():
+    e = StackupEntry.uniform("X", Pdk.WG, 0.0, 1.0)
+    t = kdb.DTrans(1.0, 2.0)
+    out = e.transformed(t)
+    for L in out.z_to_layer.values():
+        assert isinstance(L, LayerTransformed)
+
+
+def test_entry_round_corners_wraps_every_layer():
+    e = StackupEntry.uniform("X", Pdk.WG, 0.0, 1.0)
+    out = e.round_corners(0.1, 0.1, 16)
+    for L in out.z_to_layer.values():
+        assert isinstance(L, LayerRounded)
+
+
+def test_entry_bbox_wraps_every_layer():
+    e = StackupEntry.uniform("X", Pdk.WG, 0.0, 1.0)
+    out = e.bbox()
+    for L in out.z_to_layer.values():
+        assert isinstance(L, LayerBBox)
+
+
+def test_entry_map_layers_general():
+    e = StackupEntry("X", {0.0: Pdk.WG, 1.0: Pdk.CLAD})
+    out = e.map_layers(lambda L: L + Pdk.MASK)  # boolean union with MASK
+    for L in out.z_to_layer.values():
+        # The result is a LayerUnion of the original and Pdk.MASK
+        assert hasattr(L, "left") and hasattr(L, "right")
+
+
+def test_stackup_size_applies_to_all_entries_including_cuts():
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    c = StackupEntry.uniform("C", Pdk.MASK, 0.0, 1.0)
+    stack = (a + b - c).size(0.1)
+    assert [(it.entry.name, it.keep) for it in stack.items] == [
+        ("A", True), ("B", True), ("C", False)
+    ]
+    for it in stack.items:
+        for L in it.entry.z_to_layer.values():
+            assert isinstance(L, LayerSize)
+            assert L.dx == 0.1
+
+
+def test_stackup_map_layers_passthrough():
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    stack = a + b
+    out = stack.map_layers(lambda L: L.size(0.5))
+    for it in out.items:
+        for L in it.entry.z_to_layer.values():
+            assert isinstance(L, LayerSize)
+            assert L.dx == 0.5
