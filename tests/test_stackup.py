@@ -397,3 +397,72 @@ def test_resolve_topology_mismatch_raises_on_resample():
     import pytest
     with pytest.raises(NotImplementedError, match="topology"):
         (a + b).resolve(cell)
+
+
+def test_resolve_keep_false_cuts_but_does_not_appear():
+    """A - B: B cuts A but is dropped from output."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], Pdk.WG)    # A's projection
+    cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], Pdk.CLAD)  # B's projection (right half)
+
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    prisms = (a - b).resolve(cell)
+    names = [p.name for p in prisms]
+    assert names == ["A"]
+    # A has the left half left over (1 µm²)
+    [a_out] = prisms
+    assert a_out.z_to_region[0.0].area() == 1_000_000
+
+
+def test_resolve_drops_empty_entries():
+    """A entirely covered by B → A drops from output."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.CLAD)
+
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    prisms = (a + b).resolve(cell)
+    assert [p.name for p in prisms] == ["B"]
+
+
+def test_resolve_re_add_after_cut():
+    """A - B + A: strict painter's-order semantics.
+
+    Walk left-to-right:
+      1. Register A (full WG strip).
+      2. B (keep=False) is added; subtract B from A → A_1 = WG \\ CLAD = left half.
+      3. A_2 (full WG strip) is added; subtract A_2 from A_1 AND from B.
+         A_1 = (WG \\ CLAD) \\ WG = empty → pruned.
+         B is keep=False → also dropped.
+         A_2 has nothing after it → unchanged.
+    Net: a single "A" prism equal to the full WG strip.
+    """
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    # Two layers projecting to the same 2x1 strip
+    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], Pdk.CLAD)
+
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    a2 = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)  # same name allowed
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    prisms = (a - b + a2).resolve(cell)
+
+    assert [p.name for p in prisms] == ["A"]
+    assert prisms[0].z_to_region[0.0].area() == 2_000_000
+
+
+def test_resolve_single_key_zero_thickness_sheet_preserved():
+    """A single-z-key entry is a zero-thickness sheet; its region is preserved."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+
+    sheet = StackupEntry("Sheet", {0.5: Pdk.WG})
+    [p] = Stackup.of(sheet).resolve(cell)
+    assert list(p.z_to_region.keys()) == [0.5]
+    assert p.z_to_region[0.5].area() == 1_000_000
