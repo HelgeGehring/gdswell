@@ -8,7 +8,6 @@ from gdswell.cross_section import CellSection, CrossSection, LayerSection, S
 from gdswell.decorator import cell
 from gdswell.instance import Instance
 from gdswell.layer import Layer, LayerMapping
-from gdswell.stackup import ResolvedPrism, Stackup, StackupEntry
 from gdswell.layout import ACTIVE_LAYOUT, Layout
 from gdswell.port import Port
 from gdswell.routing import (
@@ -19,6 +18,7 @@ from gdswell.routing import (
     route_u,
     route_z,
 )
+from gdswell.stackup import ResolvedPrism, ResolvedStackup, Stackup, StackupEntry
 from gdswell.stats import get_stats, print_stats, reset_stats
 
 __all__ = [
@@ -35,9 +35,10 @@ __all__ = [
     "CellSection",
     "LayerMapping",
     "Layer",
-    "StackupEntry",
-    "Stackup",
     "ResolvedPrism",
+    "ResolvedStackup",
+    "Stackup",
+    "StackupEntry",
     "S",
     "route_step_by_step",
     "route_manhattan",

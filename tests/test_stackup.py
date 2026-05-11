@@ -4,7 +4,6 @@ import dataclasses
 from enum import Enum
 
 import klayout.db as kdb
-import pytest
 
 import gdswell as gw
 from gdswell.layer import (
@@ -18,7 +17,7 @@ from gdswell.layer import (
     LayerSize,
     LayerTransformed,
 )
-from gdswell.stackup import ResolvedPrism, Stackup, StackupEntry, StackupItem
+from gdswell.stackup import ResolvedPrism, ResolvedStackup, Stackup, StackupEntry, StackupItem
 
 
 class Pdk(gw.Layer, Enum):
@@ -261,23 +260,20 @@ def _cell_with_two_squares():
 def test_resolve_non_overlapping_entries():
     cell = _cell_with_two_squares()
     si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
-    bot = StackupEntry.uniform("Bot", Pdk.CLAD, -1.0, -0.5)  # different z-range, different layer
-    prisms = (si + bot).resolve(cell)
+    bot = StackupEntry.uniform("Bot", Pdk.CLAD, -1.0, -0.5)
+    rs = (si + bot).resolve(cell)
 
-    assert len(prisms) == 2
-    by_name = {p.name: p for p in prisms}
+    assert len(rs.prisms) == 2
+    by_name = {p.name: p for p in rs.prisms}
     assert set(by_name) == {"Si", "Bot"}
-
-    # mesh_order matches list position
     assert by_name["Si"].mesh_order == 0
     assert by_name["Bot"].mesh_order == 1
 
-    # Each surviving entry keeps its original z-keys (no cuts forced extra ones).
+    # No resampling — each entry keeps its own z-keys.
     assert set(by_name["Si"].z_to_region.keys()) == {0.0, 0.22}
     assert set(by_name["Bot"].z_to_region.keys()) == {-1.0, -0.5}
 
-    # Areas are non-empty and in dbu² (klayout uses 1 nm grid by default; 1µm² = 1e6 dbu²).
-    for p in prisms:
+    for p in rs.prisms:
         for r in p.z_to_region.values():
             assert r.area() > 0
 
@@ -286,11 +282,11 @@ def test_resolve_returns_frozen_dataclass():
     cell = _cell_with_two_squares()
     si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 1.0)
     other = StackupEntry.uniform("Other", Pdk.CLAD, 2.0, 3.0)
-    p = (si + other).resolve(cell)[0]
+    p = (si + other).resolve(cell).prisms[0]
     assert dataclasses.is_dataclass(p)
     # frozen → reassignment must raise
     try:
-        p.name = "nope"
+        p.name = "nope"  # type: ignore[assignment]
     except dataclasses.FrozenInstanceError:
         pass
     else:
@@ -301,7 +297,7 @@ def test_entry_resolve_via_stackup_singleton():
     """A single StackupEntry, lifted into a 1-item Stackup, resolves cleanly."""
     cell = _cell_with_two_squares()
     si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
-    prisms = Stackup.of(si).resolve(cell)
+    prisms = Stackup.of(si).resolve(cell).prisms
     assert len(prisms) == 1
     assert prisms[0].name == "Si"
     assert set(prisms[0].z_to_region.keys()) == {0.0, 0.22}
@@ -316,144 +312,134 @@ def _cell_with_overlap():
     return cell
 
 
-def test_resolve_later_wins_at_shared_z():
-    """Two entries with the same z-range overlapping in plan view: later wins."""
+def test_resolve_overlapping_entries_keep_raw_regions():
+    """Resolve no longer performs 2D cuts. Two entries that overlap in xy
+    both appear with their un-subtracted raw regions; the painter's
+    'later-wins' semantics is now the 3D backend's responsibility."""
     cell = _cell_with_overlap()
     a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
     b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
-    prisms = (a + b).resolve(cell)
-    by_name = {p.name: p for p in prisms}
-    # B's region at z=0 is the full 2x2 square (4 µm² = 4_000_000 dbu²).
-    # A's region at z=0, post-overlay, is WG minus CLAD — the WG square is
-    # entirely covered by the CLAD 2x2, so A becomes empty and is pruned.
-    assert "B" in by_name
-    assert "A" not in by_name
-    # B's area is unchanged.
+    rs = (a + b).resolve(cell)
+    by_name = {p.name: p for p in rs.prisms}
+    # Both entries present.
+    assert set(by_name) == {"A", "B"}
+    # A's raw region is the 1x1 WG square (1 µm² = 1_000_000 dbu²); not subtracted.
+    assert by_name["A"].z_to_region[0.0].area() == 1_000_000
+    # B's raw region is the 2x2 CLAD square (4 µm²).
     assert by_name["B"].z_to_region[0.0].area() == 4_000_000
 
 
-def test_resolve_partial_overlap_carves_earlier_entry():
-    """A's plan-view region is partially covered by B; A keeps the remainder."""
+def test_resolve_partial_overlap_keeps_raw_regions():
+    """Resolve no longer carves earlier entries; both keep their raw regions."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    # A: 2x1 strip on WG from x=0 to x=2
     cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], Pdk.WG)
-    # B: 1x1 strip on CLAD from x=1 to x=2 (covers right half of A)
     cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], Pdk.CLAD)
 
     a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
     b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
-    prisms = (a + b).resolve(cell)
-    by_name = {p.name: p for p in prisms}
-    # A keeps the left half (1 µm² = 1_000_000 dbu²)
-    assert by_name["A"].z_to_region[0.0].area() == 1_000_000
-    # B is unchanged (1 µm²)
+    rs = (a + b).resolve(cell)
+    by_name = {p.name: p for p in rs.prisms}
+    # A's raw region: 2x1 = 2 µm² (un-carved).
+    assert by_name["A"].z_to_region[0.0].area() == 2_000_000
+    # B unchanged.
     assert by_name["B"].z_to_region[0.0].area() == 1_000_000
 
 
-def test_resolve_cut_introduces_global_z_keys_via_morph():
-    """A's z=[0,1] is cut by B at z=[0.3,0.6]. After painter's algorithm A
-    has new z-keys at 0.3 and 0.6 (linear-morph topology preserved here
-    because both layers are simple ``Layer`` rectangles)."""
+def test_resolve_no_global_z_resample():
+    """Each entry keeps its own z-keys; no resampling, no morph."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    # A and B both project to the same 2x2 square (so subtraction is exact)
     cell.add_polygon([(0, 0), (2, 0), (2, 2), (0, 2)], Pdk.WG)
     cell.add_polygon([(0, 0), (2, 0), (2, 2), (0, 2)], Pdk.CLAD)
 
     a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
     b = StackupEntry.uniform("B", Pdk.CLAD, 0.3, 0.6)
-    prisms = (a + b).resolve(cell)
-    by_name = {p.name: p for p in prisms}
+    rs = (a + b).resolve(cell)
+    by_name = {p.name: p for p in rs.prisms}
 
-    # A has gained z-keys at 0.3 and 0.6 (the cut's range).
-    a_keys = sorted(by_name["A"].z_to_region.keys())
-    assert a_keys == [0.0, 0.3, 0.6, 1.0]
-
-    # At z=0.0, A is unchanged (full 2x2 = 4e6 dbu²).
+    # A keeps {0.0, 1.0}; B keeps {0.3, 0.6}. No resampling.
+    assert sorted(by_name["A"].z_to_region) == [0.0, 1.0]
+    assert sorted(by_name["B"].z_to_region) == [0.3, 0.6]
+    # A's region at its own z-keys is the un-carved 2x2.
     assert by_name["A"].z_to_region[0.0].area() == 4_000_000
-    # At z=0.3 and z=0.6, A is fully cut by B (empty).
-    assert by_name["A"].z_to_region[0.3].area() == 0
-    assert by_name["A"].z_to_region[0.6].area() == 0
-    # At z=1.0, A is unchanged again.
     assert by_name["A"].z_to_region[1.0].area() == 4_000_000
 
 
-def test_resolve_topology_mismatch_raises_on_resample():
-    """Entry's two z-key regions have different topology; a cut forces
-    resampling at an intermediate z, which raises NotImplementedError."""
+def test_resolve_mismatched_topology_no_longer_raises():
+    """Different polygon counts at adjacent z-keys used to raise during
+    resample. With cuts moved to 3D, resolve no longer resamples, so the
+    error is gone."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    # WG has a 1x1 square; CLAD has two disjoint squares (different topology)
     cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
     cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.CLAD)
     cell.add_polygon([(2, 0), (3, 0), (3, 1), (2, 1)], Pdk.CLAD)
 
-    a = StackupEntry("A", {0.0: Pdk.WG, 1.0: Pdk.CLAD})  # 1 polygon → 2 polygons
+    a = StackupEntry("A", {0.0: Pdk.WG, 1.0: Pdk.CLAD})
     b = StackupEntry.uniform("B", Pdk.MASK, 0.5, 0.7)
-    # If MASK is empty in this cell, the cut is trivial and no resample needed.
-    # Add a MASK polygon to force the cut to actually do work.
     cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.MASK)
 
-    with pytest.raises(NotImplementedError, match="topology"):
-        (a + b).resolve(cell)
+    # Should not raise.
+    rs = (a + b).resolve(cell)
+    assert len(rs.prisms) == 2
 
 
-def test_resolve_keep_false_cuts_but_does_not_appear():
-    """A - B: B cuts A but is dropped from output."""
+def test_resolve_keep_false_appears_with_keep_false_flag():
+    """keep=False entries appear in prisms with keep=False so cut_by can
+    reference them. The downstream backend skips emitting their volume."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], Pdk.WG)  # A's projection
-    cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], Pdk.CLAD)  # B's projection (right half)
-
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
-    prisms = (a - b).resolve(cell)
-    names = [p.name for p in prisms]
-    assert names == ["A"]
-    # A has the left half left over (1 µm²)
-    [a_out] = prisms
-    assert a_out.z_to_region[0.0].area() == 1_000_000
-
-
-def test_resolve_drops_empty_entries():
-    """A entirely covered by B → A drops from output."""
-    layout = gw.Layout()
-    cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.CLAD)
-
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
-    prisms = (a + b).resolve(cell)
-    assert [p.name for p in prisms] == ["B"]
-
-
-def test_resolve_re_add_after_cut():
-    """A - B + A: strict painter's-order semantics.
-
-    Walk left-to-right:
-      1. Register A (full WG strip).
-      2. B (keep=False) is added; subtract B from A → A_1 = WG \\ CLAD = left half.
-      3. A_2 (full WG strip) is added; subtract A_2 from A_1 AND from B.
-         A_1 = (WG \\ CLAD) \\ WG = empty → pruned.
-         B is keep=False → also dropped.
-         A_2 has nothing after it → unchanged.
-    Net: a single "A" prism equal to the full WG strip.
-    """
-    layout = gw.Layout()
-    cell = gw.Cell(layout=layout)
-    # Two layers projecting to the same 2x1 strip
     cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], Pdk.WG)
     cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], Pdk.CLAD)
 
     a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    a2 = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)  # same name allowed
     b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
-    prisms = (a - b + a2).resolve(cell)
+    rs = (a - b).resolve(cell)
+    assert [p.name for p in rs.prisms] == ["A", "B"]
+    assert [p.keep for p in rs.prisms] == [True, False]
+    # A's raw region unchanged.
+    assert rs.prisms[0].z_to_region[0.0].area() == 2_000_000
 
-    assert [p.name for p in prisms] == ["A"]
-    assert prisms[0].z_to_region[0.0].area() == 2_000_000
+
+def test_resolve_preserves_empty_entry_slot():
+    """An entry whose layer recipe yields no shapes still appears in prisms
+    (with empty regions) so the 1:1 index invariant holds. Downstream skips
+    emitting a volume."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    # CLAD has no shapes in this cell.
+
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)  # B's layer is empty
+    rs = (a + b).resolve(cell)
+    assert [p.name for p in rs.prisms] == ["A", "B"]
+    # B's regions are empty at all its z-keys.
+    for r in rs.prisms[1].z_to_region.values():
+        assert r.is_empty()
+
+
+def test_resolve_three_slots_with_duplicate_names_preserved():
+    """A - B + A under the new resolver: all three slots appear with raw
+    regions; duplicate name "A" is passed through. The 3D backend uses
+    cut_by + mesh_order to compute final volumes."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], Pdk.CLAD)
+
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    a2 = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    rs = (a - b + a2).resolve(cell)
+
+    assert [p.name for p in rs.prisms] == ["A", "B", "A"]
+    assert [p.keep for p in rs.prisms] == [True, False, True]
+    # All three regions are the raw materializations.
+    assert rs.prisms[0].z_to_region[0.0].area() == 2_000_000  # A: full strip
+    assert rs.prisms[1].z_to_region[0.0].area() == 1_000_000  # B: right half
+    assert rs.prisms[2].z_to_region[0.0].area() == 2_000_000  # A2: full strip
 
 
 def test_resolve_single_key_zero_thickness_sheet_preserved():
@@ -463,7 +449,7 @@ def test_resolve_single_key_zero_thickness_sheet_preserved():
     cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
 
     sheet = StackupEntry("Sheet", {0.5: Pdk.WG})
-    [p] = Stackup.of(sheet).resolve(cell)
+    [p] = Stackup.of(sheet).resolve(cell).prisms
     assert list(p.z_to_region.keys()) == [0.5]
     assert p.z_to_region[0.5].area() == 1_000_000
 
@@ -474,30 +460,143 @@ def test_top_level_exports():
     assert gw.StackupEntry is StackupEntry
     assert gw.Stackup is Stackup
     assert gw.ResolvedPrism is ResolvedPrism
+    assert gw.ResolvedStackup is ResolvedStackup
 
 
-def test_resolve_linear_morph_vertex_interpolation():
-    """At an inserted z midway between two original keys the cross-section
-    is the linear-morph average of the two adjacent regions.
+def test_resolved_prism_has_keep_default_true():
+    """New `keep` field — defaults True for back-compat."""
+    p = ResolvedPrism(name="X", z_to_region={0.0: kdb.Region()}, mesh_order=0)
+    assert p.keep is True
 
-    Setup: WG (1µm × 1µm at origin) at z=0; WG.size(-0.2) (0.6µm × 0.6µm
-    centred) at z=1. A disjoint CLAD cut at z=0.5 forces A to be resampled
-    at the midpoint without consuming any of the morphed core. The morphed
-    region's bbox at t=0.5 is the average of the two endpoints — (0.1, 0.1)
-    to (0.9, 0.9) µm = (100, 100) to (900, 900) dbu."""
+
+def test_resolved_prism_has_cut_by_default_empty():
+    """New `cut_by` field — defaults to empty tuple."""
+    p = ResolvedPrism(name="X", z_to_region={0.0: kdb.Region()}, mesh_order=0)
+    assert p.cut_by == ()
+
+
+def test_resolved_prism_accepts_keep_and_cut_by_kwargs():
+    p = ResolvedPrism(
+        name="X",
+        z_to_region={0.0: kdb.Region()},
+        mesh_order=2,
+        keep=False,
+        cut_by=(3, 5),
+    )
+    assert p.keep is False
+    assert p.cut_by == (3, 5)
+
+
+def test_resolved_stackup_holds_prisms_tuple():
+    p0 = ResolvedPrism(name="A", z_to_region={0.0: kdb.Region()}, mesh_order=0)
+    p1 = ResolvedPrism(name="B", z_to_region={0.0: kdb.Region()}, mesh_order=1)
+    rs = ResolvedStackup(prisms=(p0, p1))
+    assert rs.prisms == (p0, p1)
+
+
+def test_resolved_stackup_is_frozen():
+    rs = ResolvedStackup(prisms=())
+    try:
+        rs.prisms = ()  # type: ignore[misc]
+    except dataclasses.FrozenInstanceError:
+        return
+    raise AssertionError("ResolvedStackup should be frozen")
+
+
+def test_resolved_stackup_default_empty():
+    rs = ResolvedStackup()
+    assert rs.prisms == ()
+
+
+def test_resolve_preserves_own_z_keys():
+    """Each prism's z_to_region keys exactly match its entry's z_to_layer keys."""
+    cell = _cell_with_two_squares()
+    a = StackupEntry("A", {0.0: Pdk.WG, 0.5: Pdk.WG.size(-0.1), 1.0: Pdk.WG.size(-0.2)})
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.7, 1.3)
+    rs = (a + b).resolve(cell)
+    by_name = {p.name: p for p in rs.prisms}
+    assert sorted(by_name["A"].z_to_region) == [0.0, 0.5, 1.0]
+    assert sorted(by_name["B"].z_to_region) == [0.7, 1.3]
+
+
+def test_resolve_index_invariant():
+    """len(rs.prisms) == len(stack.items); each prism.mesh_order == its index."""
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    c = StackupEntry.uniform("C", Pdk.MASK, 0.0, 1.0)
+    stack = a + b - c
+    rs = stack.resolve(cell)
+    assert len(rs.prisms) == len(stack.items) == 3
+    for i, p in enumerate(rs.prisms):
+        assert p.mesh_order == i
+
+
+def test_resolve_cut_by_disjoint_z_no_edge():
+    """Two entries with overlapping xy but disjoint z get no cut_by edge."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
     cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
-    # CLAD lives far from A's region so the cut doesn't carve into the morph.
-    cell.add_polygon([(2, 2), (3, 2), (3, 3), (2, 3)], Pdk.CLAD)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.CLAD)
 
-    a = StackupEntry("A", {0.0: Pdk.WG, 1.0: Pdk.WG.size(-0.2)})
-    cut = StackupEntry("Cut", {0.5: Pdk.CLAD})
-    [p_a, *_] = (a + cut).resolve(cell)
-    assert p_a.name == "A"
-    assert 0.5 in p_a.z_to_region
-    bbox = p_a.z_to_region[0.5].bbox()
-    assert bbox.left == 100
-    assert bbox.bottom == 100
-    assert bbox.right == 900
-    assert bbox.top == 900
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 0.5)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 1.0, 1.5)  # above A, disjoint
+    rs = (a + b).resolve(cell)
+    by_name = {p.name: p for p in rs.prisms}
+    assert by_name["A"].cut_by == ()
+    assert by_name["B"].cut_by == ()
+
+
+def test_resolve_cut_by_disjoint_xy_bbox_no_edge():
+    """Two entries with overlapping z but disjoint xy bboxes get no edge."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(10, 0), (11, 0), (11, 1), (10, 1)], Pdk.CLAD)
+
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    rs = (a + b).resolve(cell)
+    by_name = {p.name: p for p in rs.prisms}
+    assert by_name["A"].cut_by == ()
+    assert by_name["B"].cut_by == ()
+
+
+def test_resolve_cut_by_overlapping_bbox_emits_edge():
+    """Two entries whose 3D bboxes overlap → cut_by edge from earlier to later."""
+    cell = _cell_with_overlap()
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    rs = (a + b).resolve(cell)
+    # Index 0 = A; index 1 = B. cut_by is forward-only.
+    assert rs.prisms[0].cut_by == (1,)
+    assert rs.prisms[1].cut_by == ()
+
+
+def test_resolve_cut_by_painter_order_forward_only():
+    """cut_by indices are strictly greater than the prism's own index.
+    Also confirms at least one prism has a non-empty cut_by so the assertion
+    is not vacuously satisfied."""
+    cell = _cell_with_overlap()
+    cell.add_polygon([(-1, -1), (1, -1), (1, 1), (-1, 1)], Pdk.MASK)
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    c = StackupEntry.uniform("C", Pdk.MASK, 0.0, 1.0)
+    rs = (a + b + c).resolve(cell)
+    # Guard against vacuous pass: at least one prism must have a cut_by edge.
+    assert any(p.cut_by for p in rs.prisms)
+    for i, p in enumerate(rs.prisms):
+        for j in p.cut_by:
+            assert j > i
+
+
+def test_resolve_cut_by_includes_keep_false_cutter():
+    """A keep=False cutter still produces a cut_by edge into earlier entries."""
+    cell = _cell_with_overlap()
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    rs = (a - b).resolve(cell)
+    # B is keep=False but lives in slot 1; A's cut_by references it.
+    assert rs.prisms[0].keep is True
+    assert rs.prisms[1].keep is False
+    assert rs.prisms[0].cut_by == (1,)
