@@ -12,6 +12,7 @@ from gdswell.layer import LayerBase
 
 if TYPE_CHECKING:
     import gdswell as gw
+    from gdswell.cross_section import CrossSection
 
 
 @dataclass(frozen=True, eq=False)
@@ -277,6 +278,109 @@ class Stackup:
         )
         return ResolvedStackup(prisms=prisms)
 
+    def resolve_cutline(
+        self,
+        cell: "gw.Cell",
+        cutline: tuple[tuple[float, float], tuple[float, float]],
+    ) -> ResolvedStackup2D:
+        """Materialise each entry's 2D polygons in the cutline plane.
+
+        ``cutline`` is two ``(x, y)`` points in microns: start and end of a
+        single line segment. The output ``ResolvedStackup2D`` mirrors the
+        3D ``ResolvedStackup`` shape: same 1:1 slot indexing, same
+        ``mesh_order`` / ``keep`` / ``cut_by`` semantics. ``cut_by`` is
+        built from 2D bbox overlap in the cutline plane.
+
+        Output regions use the (s, z) -> (x, y) convention; dbu is
+        inherited from ``cell.layout.kdb.dbu``.
+        """
+        dbu = cell.layout.kdb.dbu
+        (x0, y0), (x1, y1) = cutline
+        cutline_edge = kdb.Edge(
+            kdb.Point(int(round(x0 / dbu)), int(round(y0 / dbu))),
+            kdb.Point(int(round(x1 / dbu)), int(round(y1 / dbu))),
+        )
+
+        # Per-entry, per-z-key cutline intervals (in dbu along the cutline).
+        per_entry_intervals: list[dict[float, tuple[tuple[int, int], ...]]] = []
+        for it in self.items:
+            z_to_iv: dict[float, tuple[tuple[int, int], ...]] = {}
+            for z, layer_recipe in it.entry.z_to_layer.items():
+                xy_region = layer_recipe.get_shapes(cell)
+                z_to_iv[z] = _cutline_intervals(xy_region, cutline_edge)
+            per_entry_intervals.append(z_to_iv)
+
+        # Loft each entry's intervals into a 2D region in (s, z).
+        regions_2d: list[kdb.Region] = [
+            _loft_intervals(z_to_iv, dbu, name=it.entry.name)
+            for it, z_to_iv in zip(self.items, per_entry_intervals)
+        ]
+
+        # cut_by from 2D bbox overlap in the cutline plane.
+        n = len(self.items)
+        bboxes: list[kdb.Box | None] = [None if r.is_empty() else r.bbox() for r in regions_2d]
+        cut_by: list[tuple[int, ...]] = []
+        for i in range(n):
+            bi = bboxes[i]
+            if bi is None:
+                cut_by.append(())
+                continue
+            edges = tuple(
+                j
+                for j in range(i + 1, n)
+                if (bj := bboxes[j]) is not None and not (bi & bj).empty()
+            )
+            cut_by.append(edges)
+
+        polygons = tuple(
+            ResolvedPolygon2D(
+                name=it.entry.name,
+                region=regions_2d[i],
+                mesh_order=i,
+                keep=it.keep,
+                cut_by=cut_by[i],
+            )
+            for i, it in enumerate(self.items)
+        )
+        return ResolvedStackup2D(polygons=polygons)
+
+    def resolve_cross_section(
+        self,
+        cross_section: "CrossSection",
+        s: float = 0.0,
+    ) -> ResolvedStackup2D:
+        """Resolve the stackup against a CrossSection evaluated at ``s``.
+
+        Builds a 1 µm synthetic straight whose xy layout matches the
+        evaluated CrossSection's LayerSection rectangles, then calls
+        ``resolve_cutline`` with a midspan perpendicular cutline. Topology
+        mismatch is impossible on this path: every layer becomes a
+        constant-width rectangle along the straight, so the cutline
+        crosses each layer's region exactly once at every z-key.
+
+        ``CrossSection.cell_sections`` are dropped with a ``UserWarning``
+        that points the user at the workaround: build a real ``Cell``
+        that places the cells along an actual path, then call
+        ``resolve_cutline`` on it with a cutline of your choice.
+        """
+        import warnings
+
+        xs_static = cross_section.evaluate(s)
+        if xs_static.cell_sections:
+            names = ", ".join(repr(cs.name) for cs in xs_static.cell_sections)
+            warnings.warn(
+                f"CrossSection contains CellSection(s) {{{names}}}; these "
+                "are not representable in resolve_cross_section because "
+                "their xy extent depends on a path. To include them, "
+                "build a Cell that places the cells along your path and "
+                "call Stackup.resolve_cutline(cell, cutline) directly, "
+                "choosing the cutline xy-line yourself.",
+                UserWarning,
+                stacklevel=2,
+            )
+        cell, cutline = _build_synthetic_straight(xs_static)
+        return self.resolve_cutline(cell, cutline)
+
 
 def _entry_3d_bbox(
     z_to_region: dict[float, kdb.Region],
@@ -351,3 +455,179 @@ class ResolvedStackup:
     """
 
     prisms: tuple[ResolvedPrism, ...] = ()
+
+
+@dataclass(frozen=True)
+class ResolvedPolygon2D:
+    """One frozen 2D recipe per source entry, lofted onto the cutline plane.
+
+    ``region`` is a ``kdb.Region`` in dbu with the **(s, z) -> (x, y)
+    convention**: x = arclength ``s`` along the cutline; y = stackup
+    height ``z``. The coordinate system is NOT the layout's xy plane;
+    consumers must respect this or they will misread the data. dbu is
+    inherited from the source ``Cell.layout.kdb.dbu``.
+
+    The metadata fields (``name``, ``mesh_order``, ``keep``, ``cut_by``)
+    carry the same semantics as ``ResolvedPrism``: 1:1 indexing with
+    ``Stackup.items``, forward-only painter's ``cut_by``, ``keep=False``
+    slots retained so other prisms' ``cut_by`` can reference them.
+    """
+
+    name: str
+    region: kdb.Region
+    mesh_order: int
+    keep: bool = True
+    cut_by: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class ResolvedStackup2D:
+    """Output of ``Stackup.resolve_cutline`` and ``Stackup.resolve_cross_section``:
+    a tuple of 2D polygons indexed 1:1 with the source ``Stackup.items``.
+
+    Same invariants as ``ResolvedStackup``: both ``keep=True`` and
+    ``keep=False`` slots appear; index ``i`` in ``polygons`` matches slot
+    ``i`` in ``Stackup.items``; ``cut_by`` indices reference this tuple.
+    """
+
+    polygons: tuple[ResolvedPolygon2D, ...] = ()
+
+
+def _build_synthetic_straight(
+    xs_static: "CrossSection",
+) -> "tuple[gw.Cell, tuple[tuple[float, float], tuple[float, float]]]":
+    """Construct a 1 µm-long synthetic straight from an already-evaluated
+    CrossSection and return ``(cell, cutline)`` where the cutline is
+    perpendicular to the straight at its midspan.
+
+    Each ``LayerSection`` produces one rectangle on its layer covering
+    ``x ∈ [0, L]`` and ``y ∈ [offset - width/2, offset + width/2]``.
+    ``CellSection``s are ignored on this path (the caller is responsible
+    for warning); they are path-dependent placements and cannot be
+    represented as a transverse profile at a single ``s``.
+
+    The cutline is vertical at ``x = L/2``, spanning ``y`` from the
+    union of all LayerSection y-extents padded by 1 µm on each side.
+    """
+    import gdswell as gw
+
+    layout = gw.Layout(name="_synthetic_xs", set_as_default=False)
+    cell = gw.Cell(layout=layout)
+    L = 1.0  # length in µm; any positive value works.
+
+    y_min, y_max = float("inf"), float("-inf")
+    for ls in xs_static.layer_sections:
+        w = float(ls.width)
+        o = float(ls.offset)
+        y_lo, y_hi = o - w / 2.0, o + w / 2.0
+        if y_hi <= y_lo:
+            continue  # zero-width section → no polygon.
+        cell.add_polygon([(0.0, y_lo), (L, y_lo), (L, y_hi), (0.0, y_hi)], ls.layer)
+        y_min = min(y_min, y_lo)
+        y_max = max(y_max, y_hi)
+
+    margin = 1.0
+    if y_min == float("inf"):
+        # No layer sections produced any geometry; pick a degenerate range
+        # so the cutline is still well-defined.
+        y_min, y_max = -margin, margin
+    cutline = ((L / 2.0, y_min - margin), (L / 2.0, y_max + margin))
+    return cell, cutline
+
+
+def _cutline_intervals(region: kdb.Region, cutline: kdb.Edge) -> tuple[tuple[int, int], ...]:
+    """Slice ``region`` with ``cutline`` and return sorted dbu intervals.
+
+    Uses ``kdb.Edges([cutline]) & region`` to get the segments of the
+    cutline that lie inside the region. Each resulting edge is projected
+    onto the cutline to produce an ``(s_start, s_end)`` pair in dbu,
+    with ``s_start <= s_end``. The full list is sorted by ``s_start``.
+
+    klayout does not guarantee the order of edges returned by the
+    Edges-Region intersection, so the sort here is mandatory for
+    downstream pairing in ``_loft_intervals``.
+    """
+    if region.is_empty():
+        return ()
+    inside_edges = kdb.Edges([cutline]) & region
+    if inside_edges.is_empty():
+        return ()
+
+    p0, p1 = cutline.p1, cutline.p2
+    vx, vy = p1.x - p0.x, p1.y - p0.y
+    len_sq = vx * vx + vy * vy  # int; 0 only for a degenerate cutline
+    if len_sq == 0:
+        return ()
+    import math
+
+    inv_len = 1.0 / math.sqrt(len_sq)
+
+    def s_dbu(p: kdb.Point) -> int:
+        # Signed projection of (p - p0) onto (p1 - p0), normalised to arclength.
+        signed_dot = (p.x - p0.x) * vx + (p.y - p0.y) * vy
+        return int(round(signed_dot * inv_len))
+
+    pairs: list[tuple[int, int]] = []
+    for e in inside_edges.each():
+        a, b = s_dbu(e.p1), s_dbu(e.p2)
+        if a > b:
+            a, b = b, a
+        pairs.append((a, b))
+    pairs.sort(key=lambda iv: iv[0])
+    return tuple(pairs)
+
+
+def _loft_intervals(
+    z_to_intervals: dict[float, tuple[tuple[int, int], ...]],
+    dbu: float,
+    name: str,
+) -> kdb.Region:
+    """Loft sorted dbu intervals at adjacent z-keys into 2D polygons in the
+    cutline plane.
+
+    For each adjacent pair of z-keys ``(z_lo, z_hi)``:
+        - Intervals at the two z-keys must already be sorted by ``s_start``
+          (the caller is responsible — ``_cutline_intervals`` does this).
+        - Empty interval sets at either end of the pair produce no polygon.
+        - Equal non-zero counts produce one trapezoid per index-wise pair.
+        - Non-equal non-zero counts raise ``NotImplementedError`` with a
+          message that names the entry and z-values, so the user can split
+          the entry into smaller z-ranges with stable topology.
+
+    Single-z-key entries (zero-thickness sheets) produce an empty region:
+    sheet semantics are a 3D-only concept per the spec.
+
+    The output ``kdb.Region`` is in dbu with the (s, z) -> (x, y)
+    convention. z values are converted to dbu via ``int(round(z / dbu))``.
+    """
+    zs = sorted(z_to_intervals)
+    if len(zs) < 2:
+        return kdb.Region()
+
+    region = kdb.Region()
+    for z_lo, z_hi in zip(zs, zs[1:]):
+        intervals_lo = z_to_intervals[z_lo]
+        intervals_hi = z_to_intervals[z_hi]
+        if not intervals_lo or not intervals_hi:
+            continue
+        if len(intervals_lo) != len(intervals_hi):
+            raise NotImplementedError(
+                f"Interval-count mismatch for entry {name!r} between "
+                f"z={z_lo} and z={z_hi}: {len(intervals_lo)} intervals "
+                f"-> {len(intervals_hi)} intervals. Split the entry into "
+                "smaller z-ranges with stable topology, or simplify the "
+                "LayerBase recipe to preserve polygon count along z."
+            )
+        y_lo = int(round(z_lo / dbu))
+        y_hi = int(round(z_hi / dbu))
+        for (s0_a, s0_b), (s1_a, s1_b) in zip(intervals_lo, intervals_hi):
+            poly = kdb.Polygon(
+                [
+                    kdb.Point(s0_a, y_lo),
+                    kdb.Point(s0_b, y_lo),
+                    kdb.Point(s1_b, y_hi),
+                    kdb.Point(s1_a, y_hi),
+                ]
+            )
+            region.insert(poly)
+    return region

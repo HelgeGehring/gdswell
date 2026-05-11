@@ -18,7 +18,14 @@ from gdswell.routing import (
     route_u,
     route_z,
 )
-from gdswell.stackup import ResolvedPrism, ResolvedStackup, Stackup, StackupEntry
+from gdswell.stackup import (
+    ResolvedPolygon2D,
+    ResolvedPrism,
+    ResolvedStackup,
+    ResolvedStackup2D,
+    Stackup,
+    StackupEntry,
+)
 from gdswell.stats import get_stats, print_stats, reset_stats
 
 __all__ = [
@@ -35,8 +42,10 @@ __all__ = [
     "CellSection",
     "LayerMapping",
     "Layer",
+    "ResolvedPolygon2D",
     "ResolvedPrism",
     "ResolvedStackup",
+    "ResolvedStackup2D",
     "Stackup",
     "StackupEntry",
     "S",

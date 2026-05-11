@@ -4,6 +4,7 @@ import dataclasses
 from enum import Enum
 
 import klayout.db as kdb
+import pytest
 
 import gdswell as gw
 from gdswell.layer import (
@@ -456,11 +457,14 @@ def test_resolve_single_key_zero_thickness_sheet_preserved():
 
 def test_top_level_exports():
     import gdswell as gw
+    from gdswell.stackup import ResolvedPolygon2D, ResolvedStackup2D
 
     assert gw.StackupEntry is StackupEntry
     assert gw.Stackup is Stackup
     assert gw.ResolvedPrism is ResolvedPrism
     assert gw.ResolvedStackup is ResolvedStackup
+    assert gw.ResolvedPolygon2D is ResolvedPolygon2D
+    assert gw.ResolvedStackup2D is ResolvedStackup2D
 
 
 def test_resolved_prism_has_keep_default_true():
@@ -600,3 +604,474 @@ def test_resolve_cut_by_includes_keep_false_cutter():
     assert rs.prisms[0].keep is True
     assert rs.prisms[1].keep is False
     assert rs.prisms[0].cut_by == (1,)
+
+
+# ---- 2D resolve: data model ----------------------------------------------
+
+
+def test_resolved_polygon_2d_default_fields():
+    """New ResolvedPolygon2D defaults keep=True, cut_by=()."""
+    from gdswell.stackup import ResolvedPolygon2D
+
+    p = ResolvedPolygon2D(name="X", region=kdb.Region(), mesh_order=0)
+    assert p.name == "X"
+    assert p.region.is_empty()
+    assert p.mesh_order == 0
+    assert p.keep is True
+    assert p.cut_by == ()
+
+
+def test_resolved_polygon_2d_accepts_keep_and_cut_by():
+    from gdswell.stackup import ResolvedPolygon2D
+
+    p = ResolvedPolygon2D(name="X", region=kdb.Region(), mesh_order=2, keep=False, cut_by=(3, 5))
+    assert p.keep is False
+    assert p.cut_by == (3, 5)
+
+
+def test_resolved_polygon_2d_is_frozen():
+    from gdswell.stackup import ResolvedPolygon2D
+
+    p = ResolvedPolygon2D(name="X", region=kdb.Region(), mesh_order=0)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        p.name = "Y"  # type: ignore[misc]
+
+
+def test_resolved_stackup_2d_default_empty():
+    from gdswell.stackup import ResolvedStackup2D
+
+    rs2 = ResolvedStackup2D()
+    assert rs2.polygons == ()
+
+
+def test_resolved_stackup_2d_holds_polygons_tuple():
+    from gdswell.stackup import ResolvedPolygon2D, ResolvedStackup2D
+
+    p0 = ResolvedPolygon2D(name="A", region=kdb.Region(), mesh_order=0)
+    p1 = ResolvedPolygon2D(name="B", region=kdb.Region(), mesh_order=1)
+    rs2 = ResolvedStackup2D(polygons=(p0, p1))
+    assert rs2.polygons == (p0, p1)
+
+
+# ---- 2D resolve: _cutline_intervals --------------------------------------
+
+
+def test_cutline_intervals_single_interval():
+    """A cutline that crosses one rectangular region produces one interval."""
+    from gdswell.stackup import _cutline_intervals
+
+    region = kdb.Region(kdb.Box(0, 0, 2000, 2000))  # 2x2 µm at origin (dbu=0.001)
+    cutline_edge = kdb.Edge(kdb.Point(-500, 1000), kdb.Point(2500, 1000))
+    intervals = _cutline_intervals(region, cutline_edge)
+    # The cutline enters the region at s=500 dbu and exits at s=2500 dbu
+    # (since the cutline starts at x=-500 in dbu).
+    assert intervals == ((500, 2500),)
+
+
+def test_cutline_intervals_two_disjoint_intervals():
+    """A cutline that crosses two disconnected components → two intervals."""
+    from gdswell.stackup import _cutline_intervals
+
+    region = kdb.Region()
+    region.insert(kdb.Box(0, 0, 1000, 1000))  # 1x1 µm at origin
+    region.insert(kdb.Box(2000, 0, 3000, 1000))  # 1x1 µm shifted right
+    cutline_edge = kdb.Edge(kdb.Point(-500, 500), kdb.Point(3500, 500))
+    intervals = _cutline_intervals(region, cutline_edge)
+    assert intervals == ((500, 1500), (2500, 3500))
+
+
+def test_cutline_intervals_no_overlap_empty():
+    """Cutline that misses the region returns an empty tuple."""
+    from gdswell.stackup import _cutline_intervals
+
+    region = kdb.Region(kdb.Box(0, 0, 1000, 1000))
+    cutline_edge = kdb.Edge(kdb.Point(0, 2000), kdb.Point(1000, 2000))
+    intervals = _cutline_intervals(region, cutline_edge)
+    assert intervals == ()
+
+
+def test_cutline_intervals_empty_region():
+    """An empty region returns an empty tuple."""
+    from gdswell.stackup import _cutline_intervals
+
+    region = kdb.Region()
+    cutline_edge = kdb.Edge(kdb.Point(0, 0), kdb.Point(1000, 0))
+    intervals = _cutline_intervals(region, cutline_edge)
+    assert intervals == ()
+
+
+def test_cutline_intervals_sorted_by_start():
+    """Returned intervals are sorted by s_start ascending, regardless of
+    klayout's internal ordering of result edges."""
+    from gdswell.stackup import _cutline_intervals
+
+    region = kdb.Region()
+    # Three boxes intentionally not in left-to-right order.
+    region.insert(kdb.Box(5000, 0, 6000, 1000))
+    region.insert(kdb.Box(0, 0, 1000, 1000))
+    region.insert(kdb.Box(2500, 0, 3500, 1000))
+    cutline_edge = kdb.Edge(kdb.Point(-500, 500), kdb.Point(6500, 500))
+    intervals = _cutline_intervals(region, cutline_edge)
+    starts = [s0 for s0, _ in intervals]
+    assert starts == sorted(starts)
+    assert intervals == ((500, 1500), (3000, 4000), (5500, 6500))
+
+
+# ---- 2D resolve: _loft_intervals -----------------------------------------
+
+
+def test_loft_intervals_rectangle_two_z_keys():
+    """Two z-keys with identical single intervals → axis-aligned rectangle."""
+    from gdswell.stackup import _loft_intervals
+
+    z_to_intervals: dict[float, tuple[tuple[int, int], ...]] = {
+        0.0: ((100, 500),),
+        1.0: ((100, 500),),
+    }
+    dbu = 0.001  # 1 nm grid (1 µm == 1000 dbu)
+    region = _loft_intervals(z_to_intervals, dbu, name="X")
+    polys = list(region.each())
+    assert len(polys) == 1
+    box = polys[0].bbox()
+    # Rectangle from s=100..500 dbu, z=0..1000 dbu (1 µm at dbu=0.001).
+    assert box.left == 100
+    assert box.right == 500
+    assert box.bottom == 0
+    assert box.top == 1000
+
+
+def test_loft_intervals_trapezoid_two_z_keys():
+    """Different interval widths at z_lo vs z_hi → trapezoid."""
+    from gdswell.stackup import _loft_intervals
+
+    z_to_intervals: dict[float, tuple[tuple[int, int], ...]] = {
+        0.0: ((0, 1000),),
+        1.0: ((200, 800),),
+    }
+    dbu = 0.001
+    region = _loft_intervals(z_to_intervals, dbu, name="X")
+    polys = list(region.each())
+    assert len(polys) == 1
+    hull = list(polys[0].each_point_hull())
+    # 4 vertices: (0,0), (1000,0), (800,1000), (200,1000). Order may vary,
+    # but the set is fixed.
+    vertex_set = {(p.x, p.y) for p in hull}
+    assert vertex_set == {(0, 0), (1000, 0), (800, 1000), (200, 1000)}
+
+
+def test_loft_intervals_two_intervals_paired_index_wise():
+    """Two intervals at each z-key → two trapezoids, paired by sorted index."""
+    from gdswell.stackup import _loft_intervals
+
+    z_to_intervals: dict[float, tuple[tuple[int, int], ...]] = {
+        0.0: ((0, 100), (500, 600)),
+        1.0: ((10, 90), (510, 590)),
+    }
+    dbu = 0.001
+    region = _loft_intervals(z_to_intervals, dbu, name="X")
+    region.merge()
+    polys = list(region.each())
+    assert len(polys) == 2
+    # First poly is the left pair (small s), second the right pair.
+    polys_sorted = sorted(polys, key=lambda p: p.bbox().left)
+    assert polys_sorted[0].bbox().left == 0
+    assert polys_sorted[0].bbox().right == 100
+    assert polys_sorted[1].bbox().left == 500
+    assert polys_sorted[1].bbox().right == 600
+
+
+def test_loft_intervals_three_z_keys_stacked():
+    """Three z-keys with the same interval produce stacked rectangles that
+    merge into one taller rectangle after Region.merge()."""
+    from gdswell.stackup import _loft_intervals
+
+    z_to_intervals: dict[float, tuple[tuple[int, int], ...]] = {
+        0.0: ((0, 500),),
+        0.5: ((0, 500),),
+        1.0: ((0, 500),),
+    }
+    dbu = 0.001
+    region = _loft_intervals(z_to_intervals, dbu, name="X")
+    region.merge()
+    polys = list(region.each())
+    assert len(polys) == 1
+    box = polys[0].bbox()
+    assert box.left == 0
+    assert box.right == 500
+    assert box.bottom == 0
+    assert box.top == 1000
+
+
+def test_loft_intervals_empty_at_one_z_key_skips_pair():
+    """If one z-key in a pair has no intervals, no polygon is emitted for
+    that pair (and no error is raised)."""
+    from gdswell.stackup import _loft_intervals
+
+    z_to_intervals: dict[float, tuple[tuple[int, int], ...]] = {
+        0.0: ((0, 500),),
+        1.0: (),
+    }
+    dbu = 0.001
+    region = _loft_intervals(z_to_intervals, dbu, name="X")
+    assert region.is_empty()
+
+
+def test_loft_intervals_count_mismatch_raises():
+    """Non-empty intervals with different counts at adjacent z-keys →
+    NotImplementedError naming the entry and z-values."""
+    from gdswell.stackup import _loft_intervals
+
+    z_to_intervals: dict[float, tuple[tuple[int, int], ...]] = {
+        0.0: ((0, 500),),
+        1.0: ((0, 200), (300, 500)),
+    }
+    dbu = 0.001
+    with pytest.raises(NotImplementedError, match="entry 'X'.*z=0.0.*z=1.0"):
+        _loft_intervals(z_to_intervals, dbu, name="X")
+
+
+def test_loft_intervals_single_z_key_empty():
+    """A single-z-key entry (zero-thickness sheet) produces an empty region
+    in 2D output (sheet semantics are 3D-only per the spec)."""
+    from gdswell.stackup import _loft_intervals
+
+    z_to_intervals: dict[float, tuple[tuple[int, int], ...]] = {0.5: ((100, 500),)}
+    dbu = 0.001
+    region = _loft_intervals(z_to_intervals, dbu, name="Sheet")
+    assert region.is_empty()
+
+
+# ---- 2D resolve: Stackup.resolve_cutline ---------------------------------
+
+
+def _cutline(p0, p1):
+    """Convenience: build the public-API cutline tuple from two (x, y) points."""
+    return (p0, p1)
+
+
+def test_resolve_cutline_returns_resolved_stackup_2d():
+    """resolve_cutline returns ResolvedStackup2D with 1:1 indexing."""
+    from gdswell.stackup import ResolvedStackup2D
+
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    bot = StackupEntry.uniform("Bot", Pdk.CLAD, -1.0, -0.5)
+    rs2 = (si + bot).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
+    assert isinstance(rs2, ResolvedStackup2D)
+    assert len(rs2.polygons) == 2
+    assert [p.name for p in rs2.polygons] == ["Si", "Bot"]
+    assert [p.mesh_order for p in rs2.polygons] == [0, 1]
+    assert [p.keep for p in rs2.polygons] == [True, True]
+
+
+def test_resolve_cutline_single_rectangle_entry():
+    """A 1x1 WG square at xy=(0..1, 0..1), entry z=[0, 0.22], cutline through
+    y=0.5: 2D region is a 1µm × 0.22µm rectangle in (s, z) space."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    rs2 = Stackup.of(si).resolve_cutline(cell, _cutline((-0.5, 0.5), (1.5, 0.5)))
+    region = rs2.polygons[0].region
+    region.merge()
+    polys = list(region.each())
+    assert len(polys) == 1
+    box = polys[0].bbox()
+    # cutline starts at x=-0.5 µm; enters region at x=0 → s=500 dbu; exits
+    # at x=1 → s=1500 dbu. z from 0 to 0.22 µm → 0 to 220 dbu.
+    assert box.left == 500
+    assert box.right == 1500
+    assert box.bottom == 0
+    assert box.top == 220
+
+
+def test_resolve_cutline_trapezoid_from_size_shrink():
+    """An entry whose top z-key shrinks its xy region produces a trapezoid
+    with slanted sidewalls in the (s, z) output."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    entry = StackupEntry("Si", {0.0: Pdk.WG, 1.0: Pdk.WG.size(-0.2)})
+    rs2 = Stackup.of(entry).resolve_cutline(cell, _cutline((-0.5, 0.5), (1.5, 0.5)))
+    region = rs2.polygons[0].region
+    polys = list(region.each())
+    assert len(polys) == 1
+    hull = sorted(((p.x, p.y) for p in polys[0].each_point_hull()))
+    # 4 vertices:
+    #   bottom z=0: s=500..1500 (cutline enters at x=0, exits at x=1).
+    #   top z=1µm=1000dbu: WG shrunk by 0.2 µm → x=0.2..0.8 → s=700..1300.
+    assert hull == sorted([(500, 0), (1500, 0), (1300, 1000), (700, 1000)])
+
+
+def test_resolve_cutline_missing_entry_empty_region():
+    """An entry whose xy region is empty in this cell produces an empty
+    2D region but keeps its slot in polygons (1:1 invariant)."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    # CLAD has no shapes in this cell.
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    rs2 = (a + b).resolve_cutline(cell, _cutline((-0.5, 0.5), (1.5, 0.5)))
+    assert [p.name for p in rs2.polygons] == ["A", "B"]
+    assert not rs2.polygons[0].region.is_empty()
+    assert rs2.polygons[1].region.is_empty()
+
+
+def test_resolve_cutline_cutline_misses_layout():
+    """A cutline that doesn't cross any region → every prism has an empty
+    region but is still emitted (1:1 invariant)."""
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    rs2 = Stackup.of(si).resolve_cutline(cell, _cutline((100.0, 100.0), (200.0, 100.0)))
+    assert len(rs2.polygons) == 1
+    assert rs2.polygons[0].region.is_empty()
+    assert rs2.polygons[0].cut_by == ()
+
+
+def test_resolve_cutline_two_disjoint_components_paired():
+    """When an entry has two disjoint xy components and the cutline crosses
+    both, each z-key has two intervals; the lofted region has two pieces."""
+    cell = _cell_with_two_squares()
+    # _cell_with_two_squares puts WG at (0,0)-(1,1) and CLAD at (2,0)-(3,1).
+    # Use a layer recipe that unions both layers so the entry has 2 components.
+    entry = StackupEntry.uniform("Both", Pdk.WG + Pdk.CLAD, 0.0, 0.22)
+    rs2 = Stackup.of(entry).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
+    region = rs2.polygons[0].region
+    region.merge()
+    polys = sorted(region.each(), key=lambda p: p.bbox().left)
+    assert len(polys) == 2
+    # First component: WG square at x=0..1, cutline starts at x=-1 → s=1000..2000.
+    assert polys[0].bbox().left == 1000
+    assert polys[0].bbox().right == 2000
+    # Second component: CLAD square at x=2..3 → s=3000..4000.
+    assert polys[1].bbox().left == 3000
+    assert polys[1].bbox().right == 4000
+
+
+def test_resolve_cutline_topology_mismatch_raises():
+    """An entry whose two z-keys have different interval counts on the
+    cutline raises NotImplementedError naming the entry and z-values."""
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    # WG has one square; CLAD has two squares. Same entry has WG at z=0 and
+    # CLAD at z=1 → cutline crosses 1 interval at z=0 and 2 at z=1.
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.CLAD)
+    cell.add_polygon([(2, 0), (3, 0), (3, 1), (2, 1)], Pdk.CLAD)
+    entry = StackupEntry("A", {0.0: Pdk.WG, 1.0: Pdk.CLAD})
+    with pytest.raises(NotImplementedError, match="entry 'A'.*z=0.0.*z=1.0"):
+        Stackup.of(entry).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
+
+
+def test_resolve_cutline_cut_by_overlapping_2d_bbox():
+    """Two entries whose 2D cutline-plane bboxes overlap → cut_by edge."""
+    cell = _cell_with_overlap()
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    rs2 = (a + b).resolve_cutline(cell, _cutline((-2.0, 0.5), (2.0, 0.5)))
+    assert rs2.polygons[0].cut_by == (1,)
+    assert rs2.polygons[1].cut_by == ()
+
+
+def test_resolve_cutline_cut_by_disjoint_2d_bbox_no_edge():
+    """Two entries whose 3D bboxes overlap but whose 2D projections don't
+    overlap (one above the other in z, disjoint z-ranges) → no edge."""
+    cell = _cell_with_overlap()
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 0.4)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.6, 1.0)
+    rs2 = (a + b).resolve_cutline(cell, _cutline((-2.0, 0.5), (2.0, 0.5)))
+    # A's region spans z=0..0.4 µm; B's spans z=0.6..1.0 µm. Disjoint in z
+    # (and therefore in 2D bbox), so no cut_by edge.
+    assert rs2.polygons[0].cut_by == ()
+    assert rs2.polygons[1].cut_by == ()
+
+
+def test_resolve_cutline_keep_false_appears_with_keep_false_flag():
+    """keep=False entries appear in polygons with keep=False so cut_by
+    can reference them."""
+    cell = _cell_with_overlap()
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    rs2 = (a - b).resolve_cutline(cell, _cutline((-2.0, 0.5), (2.0, 0.5)))
+    assert [p.name for p in rs2.polygons] == ["A", "B"]
+    assert [p.keep for p in rs2.polygons] == [True, False]
+    assert rs2.polygons[0].cut_by == (1,)
+
+
+# ---- 2D resolve: resolve_cross_section -----------------------------------
+
+
+def test_resolve_cross_section_simple_two_layer_profile():
+    """A CrossSection with two LayerSections + a 2-key Stackup → expected
+    rectangles in the output 2D region."""
+    from gdswell.cross_section import CrossSection, LayerSection
+
+    xs = CrossSection(
+        layer_sections=(LayerSection(name="core", layer=Pdk.WG, width=0.5, offset=0.0),)
+    )
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    rs2 = Stackup.of(si).resolve_cross_section(xs)
+    region = rs2.polygons[0].region
+    polys = list(region.each())
+    assert len(polys) == 1
+    box = polys[0].bbox()
+    # In dbu (dbu=0.001 by default). CrossSection profile is width=0.5 µm
+    # centred at y=0 → y∈[-0.25, 0.25]. The synthetic-straight cutline is
+    # vertical, perpendicular to the straight, so s = y - y_min_with_margin.
+    # The 2D region's height (in y) is the z-thickness = 0.22 µm → 220 dbu.
+    assert box.top - box.bottom == 220
+    # The 2D region's width (in x = s) is the CrossSection's width = 0.5 µm
+    # → 500 dbu.
+    assert box.right - box.left == 500
+
+
+def test_resolve_cross_section_returns_resolved_stackup_2d():
+    """Type and 1:1 indexing invariant."""
+    from gdswell.cross_section import CrossSection, LayerSection
+    from gdswell.stackup import ResolvedStackup2D
+
+    xs = CrossSection(
+        layer_sections=(LayerSection(name="core", layer=Pdk.WG, width=0.5, offset=0.0),)
+    )
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    rs2 = (a + b).resolve_cross_section(xs)
+    assert isinstance(rs2, ResolvedStackup2D)
+    assert len(rs2.polygons) == 2
+    assert [p.name for p in rs2.polygons] == ["A", "B"]
+
+
+def test_resolve_cross_section_cell_sections_warning():
+    """A CrossSection with CellSections issues UserWarning naming the
+    workaround (use resolve_cutline on a real cell)."""
+    from gdswell.cross_section import CellSection, CrossSection, LayerSection
+
+    sub_cell = gw.Cell(layout=gw.Layout())
+    xs = CrossSection(
+        layer_sections=(LayerSection(name="core", layer=Pdk.WG, width=0.5, offset=0.0),),
+        cell_sections=(CellSection(name="anchor", cell=sub_cell, periodicity=10.0),),
+    )
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    with pytest.warns(UserWarning, match="anchor.*resolve_cutline"):
+        Stackup.of(si).resolve_cross_section(xs)
+
+
+def test_resolve_cross_section_topology_mismatch_impossible():
+    """The synthetic-straight path always produces matching interval counts
+    (one per LayerSection at every z-key). Even with size-shrunk z-keys,
+    no NotImplementedError fires."""
+    from gdswell.cross_section import CrossSection, LayerSection
+
+    xs = CrossSection(
+        layer_sections=(LayerSection(name="core", layer=Pdk.WG, width=0.5, offset=0.0),)
+    )
+    # Entry shrinks WG at the top z-key — would mismatch via a manual
+    # resolve_cutline if the cell had multiple disconnected WG components.
+    # Through resolve_cross_section the cell has a single rectangle, so
+    # the cutline crosses one interval at every z-key.
+    entry = StackupEntry("Si", {0.0: Pdk.WG, 1.0: Pdk.WG.size(-0.1)})
+    rs2 = Stackup.of(entry).resolve_cross_section(xs)
+    region = rs2.polygons[0].region
+    polys = list(region.each())
+    assert len(polys) == 1  # one trapezoid; no exception raised.
