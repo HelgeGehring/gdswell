@@ -112,3 +112,86 @@ def test_extrude_region_uniform_two_disjoint_polygons():
 
     meshes = _extrude_region_uniform(region, z_lo=0.0, z_hi=0.1, dbu=dbu)
     assert len(meshes) == 2
+
+
+def test_loft_region_pair_shrinking_square_has_smaller_top():
+    """Lofting a 1 µm square at z=0 to a 0.9 µm square at z=0.22 produces a
+    closed mesh whose top cap area is smaller than the bottom."""
+    import klayout.db as kdb
+
+    from gdswell.visualization import _loft_region_pair
+
+    dbu = 0.001
+    bottom = kdb.Region(
+        kdb.Polygon(
+            [kdb.Point(0, 0), kdb.Point(1000, 0), kdb.Point(1000, 1000), kdb.Point(0, 1000)]
+        )
+    )
+    # Top: same shape, shrunk by 50 nm per side → 0.9 µm square centered.
+    top = kdb.Region(
+        kdb.Polygon(
+            [
+                kdb.Point(50, 50),
+                kdb.Point(950, 50),
+                kdb.Point(950, 950),
+                kdb.Point(50, 950),
+            ]
+        )
+    )
+
+    meshes = _loft_region_pair(bottom, top, z_lo=0.0, z_hi=0.22, dbu=dbu, entry_name="Si_rib")
+    assert len(meshes) == 1
+    b = meshes[0].bounds
+    assert abs(b.z_min - 0.0) < 1e-6
+    assert abs(b.z_max - 0.22) < 1e-6
+    # The bottom cap (z=0) should span the full 1 µm; the top cap the
+    # shrunken 0.9 µm. The mesh as a whole spans the union in xy.
+    assert abs(b.x_min - 0.0) < 1e-6
+    assert abs(b.x_max - 1.0) < 1e-6
+
+
+def test_loft_region_pair_polygon_count_mismatch_raises():
+    """One polygon at z_lo vs. two at z_hi raises NotImplementedError naming the entry."""
+    import klayout.db as kdb
+    import pytest
+
+    from gdswell.visualization import _loft_region_pair
+
+    dbu = 0.001
+    bottom = kdb.Region(
+        kdb.Polygon(
+            [kdb.Point(0, 0), kdb.Point(1000, 0), kdb.Point(1000, 1000), kdb.Point(0, 1000)]
+        )
+    )
+    top = kdb.Region()
+    top.insert(
+        kdb.Polygon([kdb.Point(0, 0), kdb.Point(400, 0), kdb.Point(400, 400), kdb.Point(0, 400)])
+    )
+    top.insert(
+        kdb.Polygon(
+            [kdb.Point(600, 0), kdb.Point(1000, 0), kdb.Point(1000, 400), kdb.Point(600, 400)]
+        )
+    )
+
+    with pytest.raises(NotImplementedError, match="MorphEntry"):
+        _loft_region_pair(bottom, top, z_lo=0.0, z_hi=0.22, dbu=dbu, entry_name="MorphEntry")
+
+
+def test_loft_region_pair_point_count_mismatch_raises():
+    """A quad at z_lo and a triangle at z_hi (same polygon count, different
+    point counts) raises NotImplementedError."""
+    import klayout.db as kdb
+    import pytest
+
+    from gdswell.visualization import _loft_region_pair
+
+    dbu = 0.001
+    bottom = kdb.Region(
+        kdb.Polygon(
+            [kdb.Point(0, 0), kdb.Point(1000, 0), kdb.Point(1000, 1000), kdb.Point(0, 1000)]
+        )
+    )
+    top = kdb.Region(kdb.Polygon([kdb.Point(0, 0), kdb.Point(1000, 0), kdb.Point(500, 1000)]))
+
+    with pytest.raises(NotImplementedError):
+        _loft_region_pair(bottom, top, z_lo=0.0, z_hi=0.22, dbu=dbu, entry_name="MorphEntry")

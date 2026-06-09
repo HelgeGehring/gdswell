@@ -241,3 +241,89 @@ def _extrude_region_uniform(
         cap = pv.PolyData(points, faces=faces).triangulate()
         meshes.append(cap.extrude([0.0, 0.0, dz], capping=True))
     return meshes
+
+
+def _rotate_to_lex_min(hull: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Cyclically rotate ``hull`` so its lexicographically-minimum vertex is first.
+
+    Gives a canonical starting index for two hulls that should pair up by
+    index when lofting. Both rings rotated this way agree on which vertex is
+    "first" as long as their point sets are congruent under cyclic rotation.
+    """
+    idx = min(range(len(hull)), key=lambda i: hull[i])
+    return hull[idx:] + hull[:idx]
+
+
+def _loft_region_pair(
+    region_lo: "kdb_.Region",
+    region_hi: "kdb_.Region",
+    z_lo: float,
+    z_hi: float,
+    dbu: float,
+    entry_name: str,
+) -> "list":
+    """Loft each polygon in ``region_lo`` to the matching polygon in ``region_hi``.
+
+    Returns one closed ``pv.PolyData`` per paired polygon. Pairing is
+    canonical: both regions' polygons are sorted by ``(bbox.left, bbox.bottom)``
+    in dbu, and within each polygon the hull points are rotated so the
+    lexicographically-minimum dbu point comes first. Topology must match
+    between the two rings — same polygon count, same point count per
+    polygon — otherwise ``NotImplementedError`` is raised with a message
+    consistent with ``_loft_intervals`` so the user gets a coherent failure
+    mode from both viewers.
+
+    The resulting mesh has triangulated top and bottom caps and quad side
+    walls; ``.triangulate()`` converts the whole thing to a triangle mesh.
+    """
+    import numpy as np
+    import pyvista as pv
+
+    def polys_sorted(region: "kdb_.Region") -> "list[kdb_.Polygon]":
+        return sorted(region.each(), key=lambda p: (p.bbox().left, p.bbox().bottom))
+
+    polys_lo = polys_sorted(region_lo)
+    polys_hi = polys_sorted(region_hi)
+    if len(polys_lo) != len(polys_hi):
+        raise NotImplementedError(
+            f"Polygon-count mismatch for entry {entry_name!r} between "
+            f"z={z_lo} and z={z_hi}: {len(polys_lo)} polygon(s) "
+            f"-> {len(polys_hi)} polygon(s). Split the entry into "
+            "smaller z-ranges with stable topology, or simplify the "
+            "LayerBase recipe to preserve polygon count along z."
+        )
+
+    meshes: "list[pv.PolyData]" = []
+    for p_lo, p_hi in zip(polys_lo, polys_hi):
+        # Use dbu-integer hull points for canonical rotation, then convert to µm.
+        hull_lo_dbu = [(pt.x, pt.y) for pt in p_lo.each_point_hull()]
+        hull_hi_dbu = [(pt.x, pt.y) for pt in p_hi.each_point_hull()]
+        if len(hull_lo_dbu) != len(hull_hi_dbu):
+            raise NotImplementedError(
+                f"Point-count mismatch in polygon of entry {entry_name!r} "
+                f"between z={z_lo} ({len(hull_lo_dbu)} pts) and "
+                f"z={z_hi} ({len(hull_hi_dbu)} pts). Split the entry into "
+                "smaller z-ranges with stable topology."
+            )
+        hull_lo_dbu = _rotate_to_lex_min(hull_lo_dbu)
+        hull_hi_dbu = _rotate_to_lex_min(hull_hi_dbu)
+        n = len(hull_lo_dbu)
+
+        # Convert to µm; bottom ring then top ring.
+        bot = np.array([(x * dbu, y * dbu, z_lo) for (x, y) in hull_lo_dbu], dtype=float)
+        top = np.array([(x * dbu, y * dbu, z_hi) for (x, y) in hull_hi_dbu], dtype=float)
+        points = np.vstack([bot, top])
+
+        # VTK face format: [n_pts, p0, p1, ..., n_pts, p0, ...]
+        faces: list[int] = []
+        # Bottom cap (reversed so its normal points -z, away from the prism interior).
+        faces.extend([n, *reversed(range(n))])
+        # Top cap (forward winding, normal +z).
+        faces.extend([n, *range(n, 2 * n)])
+        # Side walls — one quad per edge.
+        for i in range(n):
+            j = (i + 1) % n
+            faces.extend([4, i, j, n + j, n + i])
+
+        meshes.append(pv.PolyData(points, faces=faces).triangulate())
+    return meshes
