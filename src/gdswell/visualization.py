@@ -195,3 +195,20 @@ def plot_cross_section(
     if legend_seen:
         ax.legend(loc="best")
     return ax
+
+
+# ─── 3D stackup viewer helpers ──────────────────────────────────────────────
+# Everything below supports plot_stackup_3d. The helpers are kept private
+# (underscore-prefixed) so they can later split into _pyvista_meshing.py
+# without breaking callers.
+
+
+def _kdb_polygon_hull_um(kpoly: "kdb_.Polygon", dbu: float) -> list[tuple[float, float]]:
+    """Return the kdb polygon's outer hull as (x, y) tuples in µm.
+
+    Holes are ignored — v1 of the 3D viewer does not support holes; the
+    extrude/loft pipeline assumes the hull is the full footprint. Callers
+    that need holes should subtract them at the 2D-region level before
+    calling.
+    """
+    return [(p.x * dbu, p.y * dbu) for p in kpoly.each_point_hull()]

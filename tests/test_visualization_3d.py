@@ -43,3 +43,24 @@ def test_palette_color_for_name_color_map_wins():
     c = _palette_color_for_name("A", color_map, name_to_color)
     assert c == "red"
     assert name_to_color == {}  # cache untouched
+
+
+def test_kdb_polygon_hull_um_unit_square():
+    """A 1 µm × 1 µm rectangle at the origin yields four corner points."""
+    import klayout.db as kdb
+
+    from gdswell.visualization import _kdb_polygon_hull_um
+
+    dbu = 0.001
+    # Build a 1 µm square polygon directly in dbu (1000 dbu = 1 µm).
+    kpoly = kdb.Polygon(
+        [kdb.Point(0, 0), kdb.Point(1000, 0), kdb.Point(1000, 1000), kdb.Point(0, 1000)]
+    )
+
+    hull = _kdb_polygon_hull_um(kpoly, dbu)
+
+    assert len(hull) == 4
+    # KLayout's each_point_hull walks the hull in its own internal order;
+    # we assert the set of corners (order-independent) plus first==origin.
+    assert hull[0] == (0.0, 0.0)
+    assert set(hull) == {(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)}
