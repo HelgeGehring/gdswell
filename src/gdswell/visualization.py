@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     import matplotlib.axes
     import matplotlib.colors
 
+    import gdswell as gw
     from gdswell.stackup import ResolvedStackup2D
 
 
@@ -327,3 +328,36 @@ def _loft_region_pair(
 
         meshes.append(pv.PolyData(points, faces=faces).triangulate())
     return meshes
+
+
+def _prism_cut_z_to_region(
+    resolved: "gw.ResolvedStackup",
+    prism_index: int,
+    apply_cuts: bool,
+) -> "dict[float, kdb_.Region]":
+    """Return the prism's z_to_region with cutters subtracted when ``apply_cuts``.
+
+    For each (z, region) of the prism at ``prism_index``, subtract the
+    z-union of every cutter referenced by ``cut_by`` whose z-range covers
+    the current z (inclusive endpoints, matching ``_bbox3d_overlaps``). The
+    z-union approximation conservatively over-cuts slanted cutters, mirroring
+    the same bias the 2D ``cut_by`` machinery already takes.
+    """
+    prism = resolved.prisms[prism_index]
+    out: dict[float, kdb_.Region] = {}
+    for z, region in prism.z_to_region.items():
+        result = region.dup()
+        if apply_cuts:
+            for j in prism.cut_by:
+                cutter = resolved.prisms[j]
+                z_keys = sorted(cutter.z_to_region)
+                if not z_keys:
+                    continue
+                if z < z_keys[0] or z > z_keys[-1]:
+                    continue
+                cutter_union = kdb_.Region()
+                for r in cutter.z_to_region.values():
+                    cutter_union += r
+                result -= cutter_union
+        out[z] = result
+    return out

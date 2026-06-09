@@ -195,3 +195,51 @@ def test_loft_region_pair_point_count_mismatch_raises():
 
     with pytest.raises(NotImplementedError):
         _loft_region_pair(bottom, top, z_lo=0.0, z_hi=0.22, dbu=dbu, entry_name="MorphEntry")
+
+
+def _build_two_entry_resolved(dbu: float = 0.001):
+    """Helper: a 2-entry stack (square prism + 0.5 µm square cutter at the
+    same xy) resolved against a cell that draws both polygons."""
+    from enum import Enum
+
+    import gdswell as gw
+
+    class Pdk(gw.Layer, Enum):
+        WG = (1, 0)
+        MASK = (3, 0)
+
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(0, 0), (0.5, 0), (0.5, 0.5), (0, 0.5)], Pdk.MASK)
+    stack = gw.StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22) + gw.StackupEntry.uniform(
+        "Mask", Pdk.MASK, 0.0, 0.22
+    )
+    return stack.resolve(cell)
+
+
+def test_prism_cut_z_to_region_no_cuts_returns_raw():
+    """apply_cuts=False yields exactly the prism's own z_to_region."""
+    from gdswell.visualization import _prism_cut_z_to_region
+
+    resolved = _build_two_entry_resolved()
+    cut = _prism_cut_z_to_region(resolved, prism_index=0, apply_cuts=False)
+    assert set(cut.keys()) == set(resolved.prisms[0].z_to_region.keys())
+    for z, region in cut.items():
+        assert region.bbox() == resolved.prisms[0].z_to_region[z].bbox()
+
+
+def test_prism_cut_z_to_region_apply_cuts_subtracts_overlap():
+    """With apply_cuts=True, the cutter's region is subtracted at every z
+    within its z-range."""
+    from gdswell.visualization import _prism_cut_z_to_region
+
+    resolved = _build_two_entry_resolved()
+    cut = _prism_cut_z_to_region(resolved, prism_index=0, apply_cuts=True)
+    # Bottom-left 0.5 × 0.5 carved away from a 1 × 1 → remaining region has
+    # 75% of original area (in dbu² units).
+    original_area = sum(r.area() for r in resolved.prisms[0].z_to_region.values()) / len(
+        resolved.prisms[0].z_to_region
+    )
+    cut_area = sum(r.area() for r in cut.values()) / len(cut)
+    assert cut_area == 0.75 * original_area
