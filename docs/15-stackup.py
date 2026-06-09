@@ -171,6 +171,38 @@ for p in resolved.prisms:
 # kept prism's final volume.
 
 # %% [markdown]
+# ### Rendering the 3D stack with PyVista
+#
+# `gw.plot_stackup_3d(resolved)` builds one `pv.PolyData` per kept prism,
+# applies the painter's-algorithm cuts (the same ones `plot_cross_section`
+# honors in 2D), and returns a configured `pv.Plotter`. The default
+# `opacity=0.3` keeps bulk media (substrate, BOX, claddings) see-through so
+# the rib, slab, heater, via, and metal-1 pad stay visible. `opacity_map`
+# is the escape hatch for making specific prisms opaque.
+
+# %%
+import pyvista as pv  # noqa: E402
+
+pv.set_jupyter_backend("static")  # PNG output for the static doc build
+
+plotter = gw.plot_stackup_3d(
+    resolved,
+    opacity_map={
+        "Si_rib": 1.0,
+        "Si_slab": 1.0,
+        "Heater": 1.0,
+        "Via1": 1.0,
+        "Metal1": 1.0,
+    },
+)
+plotter.show()
+
+# %% [markdown]
+# For interactive exploration during dev work, switch to
+# `pv.set_jupyter_backend("trame")` (and install `trame-pyvista`); the
+# viewer code is unchanged.
+
+# %% [markdown]
 # ## Cutting in 2D — `resolve_cutline`
 #
 # To get a 2D cross-section, pass a cutline (two xy points in microns)
