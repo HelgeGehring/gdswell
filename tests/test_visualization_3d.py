@@ -425,3 +425,74 @@ def test_plot_stackup_3d_opacity_map_precedence():
         assert not any(abs(op - 0.3) < 1e-6 for op in opacities)
     finally:
         plotter.close()
+
+
+def test_color_symmetry_2d_3d_for_same_resolved_stack():
+    """Without an explicit color_map, both viewers allocate the i-th tab20
+    color to the i-th unique prism name (in painter's order)."""
+    from enum import Enum
+
+    import gdswell as gw
+
+    class Pdk(gw.Layer, Enum):
+        WG = (1, 0)
+        CLAD = (2, 0)
+
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(-2, -2), (2, -2), (2, 2), (-2, 2)], Pdk.CLAD)
+    cell.add_polygon([(-1, -0.25), (1, -0.25), (1, 0.25), (-1, 0.25)], Pdk.WG)
+    stack = gw.StackupEntry.uniform("Clad", Pdk.CLAD, 0.0, 2.0) + gw.StackupEntry.uniform(
+        "Si", Pdk.WG, 0.0, 0.22
+    )
+
+    # 2D path
+    cutline = ((0.0, -3.0), (0.0, 3.0))
+    resolved_2d = stack.resolve_cutline(cell, cutline)
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    fig, ax = plt.subplots()
+    gw.plot_cross_section(resolved_2d, ax=ax)
+    # Pull color out of the first patch of each label.
+    label_to_2d_color: dict[str, tuple[float, ...]] = {}
+    for patch in ax.patches:
+        lbl = str(patch.get_label())
+        if lbl and lbl not in label_to_2d_color:
+            rgba = np.asarray(patch.get_facecolor(), dtype=float).ravel()
+            label_to_2d_color[lbl] = tuple(rgba.tolist())
+    plt.close(fig)
+
+    # 3D path
+    resolved_3d = stack.resolve(cell)
+    plotter = gw.plot_stackup_3d(resolved_3d)
+    try:
+        label_to_3d_color: dict[str, tuple[float, ...]] = {}
+        for name, actor in plotter.renderer.actors.items():
+            prop = getattr(actor, "prop", None)
+            if prop is None or not hasattr(prop, "color"):
+                continue
+            # pv.Color exposes .float_rgb as a 3-tuple in [0, 1].
+            label_to_3d_color[str(name)] = tuple(prop.color.float_rgb)
+    finally:
+        plotter.close()
+
+    # Both viewers see "Clad" and "Si" in the same order. Compare the RGB
+    # portion (matplotlib returns RGBA; vtk returns RGB with no alpha).
+    for name in ("Clad", "Si"):
+        assert name in label_to_2d_color, f"2D viewer didn't render {name}"
+        assert name in label_to_3d_color, f"3D viewer didn't render {name}"
+        rgb_2d = label_to_2d_color[name][:3]
+        rgb_3d = label_to_3d_color[name]
+        # Each channel must agree within VTK's float-rounding tolerance.
+        for c2d, c3d in zip(rgb_2d, rgb_3d):
+            assert abs(c2d - c3d) < 1e-2, f"{name} color mismatch: {rgb_2d} vs {rgb_3d}"
+
+
+def test_plot_stackup_3d_is_in_top_level_all():
+    """gw.plot_stackup_3d must appear in gdswell.__all__ so it's part of the
+    documented public surface (not just a happens-to-be-importable name)."""
+    import gdswell as gw
+
+    assert hasattr(gw, "plot_stackup_3d")
+    assert "plot_stackup_3d" in gw.__all__
