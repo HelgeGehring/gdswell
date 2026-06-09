@@ -361,3 +361,42 @@ def _prism_cut_z_to_region(
                 result -= cutter_union
         out[z] = result
     return out
+
+
+def _regions_equal(a: "kdb_.Region", b: "kdb_.Region") -> bool:
+    """True iff ``a`` and ``b`` cover the same xy area.
+
+    ``kdb.Region.__eq__`` is identity-based (returns ``False`` for two
+    shape-identical regions built separately), and there is no public
+    ``hash()`` method. XOR-is-empty is the cheapest set-theoretic test.
+    """
+    return (a ^ b).is_empty()
+
+
+def _prism_meshes(
+    z_to_region: "dict[float, kdb_.Region]",
+    dbu: float,
+    entry_name: str,
+) -> "list":
+    """Dispatch a single prism's cut region dict to extrude or loft.
+
+    Rules (matching the spec's "Mesh assembly" pass):
+
+    - 0 z-keys (all cut away) → empty list.
+    - 1 z-key (zero-thickness sheet) → empty list (3D-only concept).
+    - 2 z-keys with regions that hash equal → uniform vertical extrude.
+    - Otherwise → loft each adjacent z-pair via ``_loft_region_pair``.
+    """
+    z_keys = sorted(z for z, r in z_to_region.items() if not r.is_empty())
+    if len(z_keys) < 2:
+        return []
+
+    if len(z_keys) == 2 and _regions_equal(z_to_region[z_keys[0]], z_to_region[z_keys[1]]):
+        return _extrude_region_uniform(z_to_region[z_keys[0]], z_keys[0], z_keys[1], dbu)
+
+    meshes: list = []
+    for z_lo, z_hi in zip(z_keys, z_keys[1:]):
+        meshes.extend(
+            _loft_region_pair(z_to_region[z_lo], z_to_region[z_hi], z_lo, z_hi, dbu, entry_name)
+        )
+    return meshes

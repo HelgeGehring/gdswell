@@ -243,3 +243,67 @@ def test_prism_cut_z_to_region_apply_cuts_subtracts_overlap():
     )
     cut_area = sum(r.area() for r in cut.values()) / len(cut)
     assert cut_area == 0.75 * original_area
+
+
+def test_prism_meshes_uniform_returns_extruded():
+    """A 2-key region dict with equal regions → uniform extrude path."""
+    import klayout.db as kdb
+
+    from gdswell.visualization import _prism_meshes
+
+    dbu = 0.001
+    region = kdb.Region(
+        kdb.Polygon(
+            [kdb.Point(0, 0), kdb.Point(1000, 0), kdb.Point(1000, 1000), kdb.Point(0, 1000)]
+        )
+    )
+    z_to_region = {0.0: region, 0.22: region.dup()}
+    meshes = _prism_meshes(z_to_region, dbu=dbu, entry_name="Si")
+    assert len(meshes) == 1
+    b = meshes[0].bounds
+    assert abs(b.z_min - 0.0) < 1e-6
+    assert abs(b.z_max - 0.22) < 1e-6
+
+
+def test_prism_meshes_empty_returns_empty():
+    """Zero z-keys → empty list."""
+    from gdswell.visualization import _prism_meshes
+
+    assert _prism_meshes({}, dbu=0.001, entry_name="X") == []
+
+
+def test_prism_meshes_single_z_key_returns_empty():
+    """One z-key (zero-thickness sheet) → empty list."""
+    import klayout.db as kdb
+
+    from gdswell.visualization import _prism_meshes
+
+    region = kdb.Region(
+        kdb.Polygon(
+            [kdb.Point(0, 0), kdb.Point(1000, 0), kdb.Point(1000, 1000), kdb.Point(0, 1000)]
+        )
+    )
+    assert _prism_meshes({0.0: region}, dbu=0.001, entry_name="Sheet") == []
+
+
+def test_prism_meshes_slanted_returns_lofted():
+    """Differing regions at adjacent z-keys → loft path."""
+    import klayout.db as kdb
+
+    from gdswell.visualization import _prism_meshes
+
+    dbu = 0.001
+    bottom = kdb.Region(
+        kdb.Polygon(
+            [kdb.Point(0, 0), kdb.Point(1000, 0), kdb.Point(1000, 1000), kdb.Point(0, 1000)]
+        )
+    )
+    top = kdb.Region(
+        kdb.Polygon(
+            [kdb.Point(50, 50), kdb.Point(950, 50), kdb.Point(950, 950), kdb.Point(50, 950)]
+        )
+    )
+    meshes = _prism_meshes({0.0: bottom, 0.22: top}, dbu=dbu, entry_name="Si_rib")
+    assert len(meshes) == 1
+    b = meshes[0].bounds
+    assert abs(b.z_max - 0.22) < 1e-6
