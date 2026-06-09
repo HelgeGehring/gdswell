@@ -8,10 +8,38 @@ from typing import TYPE_CHECKING
 import klayout.db as kdb_
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import matplotlib.axes
     import matplotlib.colors
 
     from gdswell.stackup import ResolvedStackup2D
+
+
+def _palette_color_for_name(
+    name: str,
+    color_map: "Mapping[str, object]",
+    name_to_color: "dict[str, tuple[float, ...]]",
+) -> object:
+    """Return a stable color for ``name`` using the shared tab20 allocator.
+
+    ``color_map`` is the user-supplied override dict. ``name_to_color`` is the
+    per-call cache that records first-seen order; the i-th unique name not in
+    ``color_map`` gets the i-th tab20 entry. Mutates ``name_to_color`` in place
+    on first sighting; never mutates it when ``color_map`` is the source. Both
+    ``plot_cross_section`` and ``plot_stackup_3d`` call this so they allocate
+    matching colors when neither receives an explicit ``color_map``.
+    """
+    if name in color_map:
+        return color_map[name]
+    if name not in name_to_color:
+        import matplotlib.colors as mcolors
+        import matplotlib.pyplot as plt
+
+        cmap = plt.get_cmap("tab20")
+        palette = tuple(tuple(c) for c in mcolors.to_rgba_array(cmap(range(cmap.N))))
+        name_to_color[name] = palette[len(name_to_color) % len(palette)]
+    return name_to_color[name]
 
 
 @contextlib.contextmanager
@@ -105,20 +133,10 @@ def plot_cross_section(
     dbu = resolved_2d.dbu
     color_map = color_map or {}
 
-    import matplotlib.colors as mcolors
-
-    cmap = plt.get_cmap("tab20")
-    palette: tuple[tuple[float, ...], ...] = tuple(
-        tuple(c) for c in mcolors.to_rgba_array(cmap(range(cmap.N)))
-    )
     name_to_color: dict[str, tuple[float, ...]] = {}
 
     def color_for(name: str):
-        if name in color_map:
-            return color_map[name]
-        if name not in name_to_color:
-            name_to_color[name] = palette[len(name_to_color) % len(palette)]
-        return name_to_color[name]
+        return _palette_color_for_name(name, color_map, name_to_color)
 
     legend_seen: set[str] = set()
 
