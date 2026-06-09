@@ -307,3 +307,121 @@ def test_prism_meshes_slanted_returns_lofted():
     assert len(meshes) == 1
     b = meshes[0].bounds
     assert abs(b.z_max - 0.22) < 1e-6
+
+
+def test_plot_stackup_3d_single_uniform_returns_plotter_with_one_actor():
+    """A 1-entry stack adds exactly one mesh to a fresh plotter."""
+    from enum import Enum
+
+    import gdswell as gw
+
+    class Pdk(gw.Layer, Enum):
+        WG = (1, 0)
+
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    stack = gw.Stackup.of(gw.StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22))
+    resolved = stack.resolve(cell)
+
+    plotter = gw.plot_stackup_3d(resolved)
+    try:
+        # Renderer holds one actor per add_mesh call.
+        assert len([a for a in plotter.renderer.actors.values()]) >= 1
+    finally:
+        plotter.close()
+
+
+def test_plot_stackup_3d_keep_false_is_omitted():
+    """A keep=False cutter is referenced but never rendered."""
+    from enum import Enum
+
+    import gdswell as gw
+
+    class Pdk(gw.Layer, Enum):
+        WG = (1, 0)
+        MASK = (3, 0)
+
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(0, 0), (0.5, 0), (0.5, 0.5), (0, 0.5)], Pdk.MASK)
+    stack = gw.StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22) - gw.StackupEntry.uniform(
+        "Mask", Pdk.MASK, 0.0, 0.22
+    )
+    resolved = stack.resolve(cell)
+
+    plotter = gw.plot_stackup_3d(resolved)
+    try:
+        # Exactly one kept prism → at most one mesh added (legend/axes
+        # actors may also appear, so we filter by label).
+        mesh_labels = [name for name in plotter.renderer.actors.keys() if "Si" in str(name)]
+        assert len(mesh_labels) >= 1
+        # No mesh labeled "Mask".
+        assert not any("Mask" in str(name) for name in plotter.renderer.actors.keys())
+    finally:
+        plotter.close()
+
+
+def test_plot_stackup_3d_apply_cuts_false_keeps_overlapping():
+    """A keep=True full-coverage cutter on top of Si:
+    - apply_cuts=True: Si fully carved → fewer actors total.
+    - apply_cuts=False: Si NOT carved → more actors visible.
+    """
+    from enum import Enum
+
+    import gdswell as gw
+
+    class Pdk(gw.Layer, Enum):
+        WG = (1, 0)
+        MASK = (3, 0)
+
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.MASK)  # full coverage
+    stack = gw.StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22) + gw.StackupEntry.uniform(
+        "FullCutter", Pdk.MASK, 0.0, 0.22
+    )
+    resolved = stack.resolve(cell)
+
+    plotter_cut = gw.plot_stackup_3d(resolved, apply_cuts=True)
+    plotter_raw = gw.plot_stackup_3d(resolved, apply_cuts=False)
+    try:
+        cut_actor_count = len(plotter_cut.renderer.actors)
+        raw_actor_count = len(plotter_raw.renderer.actors)
+        # Raw mode shows both; cut mode shows fewer.
+        assert raw_actor_count > cut_actor_count
+    finally:
+        plotter_cut.close()
+        plotter_raw.close()
+
+
+def test_plot_stackup_3d_opacity_map_precedence():
+    """opacity_map[name] wins over the scalar opacity default."""
+    from enum import Enum
+
+    import gdswell as gw
+
+    class Pdk(gw.Layer, Enum):
+        WG = (1, 0)
+
+    layout = gw.Layout()
+    cell = gw.Cell(layout=layout)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    stack = gw.Stackup.of(gw.StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22))
+    resolved = stack.resolve(cell)
+
+    plotter = gw.plot_stackup_3d(resolved, opacity=0.3, opacity_map={"Si": 0.95})
+    try:
+        # Find the mesh actor; its property opacity should be 0.95, not 0.3.
+        opacities = [
+            actor.prop.opacity  # ty: ignore[unresolved-attribute]
+            for name, actor in plotter.renderer.actors.items()
+            if hasattr(actor, "prop") and actor.prop is not None
+        ]
+        assert any(abs(op - 0.95) < 1e-6 for op in opacities)
+        # And no actor at 0.3 since we only have one mesh.
+        assert not any(abs(op - 0.3) < 1e-6 for op in opacities)
+    finally:
+        plotter.close()

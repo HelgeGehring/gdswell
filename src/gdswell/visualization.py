@@ -12,9 +12,10 @@ if TYPE_CHECKING:
 
     import matplotlib.axes
     import matplotlib.colors
+    import pyvista as pv
 
     import gdswell as gw
-    from gdswell.stackup import ResolvedStackup2D
+    from gdswell.stackup import ResolvedStackup, ResolvedStackup2D
 
 
 def _palette_color_for_name(
@@ -400,3 +401,75 @@ def _prism_meshes(
             _loft_region_pair(z_to_region[z_lo], z_to_region[z_hi], z_lo, z_hi, dbu, entry_name)
         )
     return meshes
+
+
+def plot_stackup_3d(
+    resolved: "ResolvedStackup",
+    *,
+    plotter: "pv.Plotter | None" = None,
+    apply_cuts: bool = True,
+    color_map: "dict[str, object] | None" = None,
+    opacity: float = 0.3,
+    opacity_map: "dict[str, float] | None" = None,
+    show_edges: bool = False,
+    show_legend: bool = True,
+    jupyter_backend: "str | None" = None,  # noqa: ARG001 — consumed by caller's .show()
+) -> "pv.Plotter":
+    """Render a ``ResolvedStackup`` in 3D as a configured ``pv.Plotter``.
+
+    Mirrors ``plot_cross_section``: cuts are applied by default (overlapping
+    later prisms subtract from earlier ones, per painter's algorithm), the
+    color palette matches between 2D and 3D when no ``color_map`` is given,
+    and ``keep=False`` cutters participate in cut math but never appear as
+    actors. The default ``opacity=0.3`` keeps bulk media (substrate, BOX,
+    claddings) translucent so features inside them stay visible; use
+    ``opacity_map`` to make specific prisms opaque.
+
+    The returned plotter has depth peeling enabled (so translucent overlaps
+    composite correctly), an axes triad, a white background, and a legend
+    when ``show_legend=True``. The function does **not** call ``.show()``;
+    the caller decides when to display. ``jupyter_backend`` is reserved
+    for symmetry with the docs idiom — pass it through to ``plotter.show()``
+    yourself.
+    """
+    import pyvista as pv
+
+    color_map = color_map or {}
+    opacity_map = opacity_map or {}
+    name_to_color: dict[str, tuple[float, ...]] = {}
+
+    if plotter is None:
+        plotter = pv.Plotter()
+
+    plotter.background_color = "white"  # ty: ignore[invalid-assignment]
+    plotter.enable_depth_peeling(
+        number_of_peels=8, occlusion_ratio=0.0
+    )  # ty: ignore[missing-argument]
+    plotter.show_axes()  # ty: ignore[missing-argument]
+
+    legend_seen: set[str] = set()
+    for i, prism in enumerate(resolved.prisms):
+        if not prism.keep:
+            continue
+        cut_z_to_region = _prism_cut_z_to_region(resolved, i, apply_cuts)
+        meshes = _prism_meshes(cut_z_to_region, resolved.dbu, prism.name)
+        if not meshes:
+            continue
+        fc = _palette_color_for_name(prism.name, color_map, name_to_color)
+        op = opacity_map.get(prism.name, opacity)
+        for mesh in meshes:
+            label = prism.name if prism.name not in legend_seen else None
+            plotter.add_mesh(
+                mesh,
+                color=fc,
+                opacity=op,
+                show_edges=show_edges,
+                name=prism.name,
+                label=label,
+            )
+            legend_seen.add(prism.name)
+
+    if show_legend and legend_seen:
+        plotter.add_legend()  # ty: ignore[missing-argument]
+
+    return plotter
