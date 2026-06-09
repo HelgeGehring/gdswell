@@ -212,3 +212,32 @@ def _kdb_polygon_hull_um(kpoly: "kdb_.Polygon", dbu: float) -> list[tuple[float,
     calling.
     """
     return [(p.x * dbu, p.y * dbu) for p in kpoly.each_point_hull()]
+
+
+def _extrude_region_uniform(
+    region: "kdb_.Region",
+    z_lo: float,
+    z_hi: float,
+    dbu: float,
+) -> "list":
+    """Extrude every polygon in ``region`` vertically from ``z_lo`` to ``z_hi``.
+
+    Returns one ``pv.PolyData`` per ``kdb.Polygon`` in the region. Each
+    polygon's hull is triangulated as a 2D cap at ``z_lo`` and then
+    ``.extrude([0, 0, z_hi - z_lo], capping=True)`` lifts it to a 3D prism
+    with both caps and side walls. Empty regions return an empty list.
+    """
+    import numpy as np
+    import pyvista as pv
+
+    meshes: "list[pv.PolyData]" = []
+    dz = z_hi - z_lo
+    for kpoly in region.each():
+        hull = _kdb_polygon_hull_um(kpoly, dbu)
+        if len(hull) < 3:
+            continue
+        points = np.array([(x, y, z_lo) for (x, y) in hull], dtype=float)
+        faces = [len(hull), *range(len(hull))]
+        cap = pv.PolyData(points, faces=faces).triangulate()
+        meshes.append(cap.extrude([0.0, 0.0, dz], capping=True))
+    return meshes

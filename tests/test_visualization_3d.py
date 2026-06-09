@@ -64,3 +64,51 @@ def test_kdb_polygon_hull_um_unit_square():
     # we assert the set of corners (order-independent) plus first==origin.
     assert hull[0] == (0.0, 0.0)
     assert set(hull) == {(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)}
+
+
+def test_extrude_region_uniform_unit_square():
+    """Extruding a unit square from z=0 to z=0.22 produces a PolyData with the
+    expected bounding box (within dbu rounding tolerance)."""
+    import klayout.db as kdb
+
+    from gdswell.visualization import _extrude_region_uniform
+
+    dbu = 0.001
+    region = kdb.Region(
+        kdb.Polygon(
+            [kdb.Point(0, 0), kdb.Point(1000, 0), kdb.Point(1000, 1000), kdb.Point(0, 1000)]
+        )
+    )
+
+    meshes = _extrude_region_uniform(region, z_lo=0.0, z_hi=0.22, dbu=dbu)
+    assert len(meshes) == 1
+    b = meshes[0].bounds
+    assert abs(b.x_min - 0.0) < 1e-6
+    assert abs(b.x_max - 1.0) < 1e-6
+    assert abs(b.y_min - 0.0) < 1e-6
+    assert abs(b.y_max - 1.0) < 1e-6
+    assert abs(b.z_min - 0.0) < 1e-6
+    assert abs(b.z_max - 0.22) < 1e-6
+    # Capped extrusion has triangulated top + bottom + sidewall quads.
+    assert meshes[0].n_cells > 0
+
+
+def test_extrude_region_uniform_two_disjoint_polygons():
+    """Two disjoint polygons in one region produce two meshes."""
+    import klayout.db as kdb
+
+    from gdswell.visualization import _extrude_region_uniform
+
+    dbu = 0.001
+    region = kdb.Region()
+    region.insert(
+        kdb.Polygon([kdb.Point(0, 0), kdb.Point(500, 0), kdb.Point(500, 500), kdb.Point(0, 500)])
+    )
+    region.insert(
+        kdb.Polygon(
+            [kdb.Point(2000, 0), kdb.Point(2500, 0), kdb.Point(2500, 500), kdb.Point(2000, 500)]
+        )
+    )
+
+    meshes = _extrude_region_uniform(region, z_lo=0.0, z_hi=0.1, dbu=dbu)
+    assert len(meshes) == 2
