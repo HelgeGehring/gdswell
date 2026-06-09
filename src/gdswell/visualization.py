@@ -385,9 +385,19 @@ def _prism_meshes(
 
     - 0 z-keys (all cut away) → empty list.
     - 1 z-key (zero-thickness sheet) → empty list (3D-only concept).
-    - 2 z-keys with regions that hash equal → uniform vertical extrude.
+    - 2 z-keys with regions that compare set-equal → uniform vertical extrude.
     - Otherwise → loft each adjacent z-pair via ``_loft_region_pair``.
+
+    Topology fallback: when ``_loft_region_pair`` raises ``NotImplementedError``
+    on an adjacent pair (different polygon or point counts — typically caused
+    by cuts that apply at one z but not the other), the dispatcher logs a
+    ``UserWarning`` and falls back to vertical extrusion of the lower region
+    across the pair's z-range. The resulting prism is approximate (the
+    cut at the upper z is lost in this slab), but renders something useful
+    instead of crashing.
     """
+    import warnings
+
     z_keys = sorted(z for z, r in z_to_region.items() if not r.is_empty())
     if len(z_keys) < 2:
         return []
@@ -397,9 +407,19 @@ def _prism_meshes(
 
     meshes: list = []
     for z_lo, z_hi in zip(z_keys, z_keys[1:]):
-        meshes.extend(
-            _loft_region_pair(z_to_region[z_lo], z_to_region[z_hi], z_lo, z_hi, dbu, entry_name)
-        )
+        try:
+            meshes.extend(
+                _loft_region_pair(z_to_region[z_lo], z_to_region[z_hi], z_lo, z_hi, dbu, entry_name)
+            )
+        except NotImplementedError as err:
+            warnings.warn(
+                f"Entry {entry_name!r}: post-cut topology differs between "
+                f"z={z_lo} and z={z_hi} ({err}); falling back to vertical "
+                f"extrusion of the z={z_lo} region across [{z_lo}, {z_hi}].",
+                UserWarning,
+                stacklevel=2,
+            )
+            meshes.extend(_extrude_region_uniform(z_to_region[z_lo], z_lo, z_hi, dbu))
     return meshes
 
 

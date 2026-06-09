@@ -496,3 +496,42 @@ def test_plot_stackup_3d_is_in_top_level_all():
 
     assert hasattr(gw, "plot_stackup_3d")
     assert "plot_stackup_3d" in gw.__all__
+
+
+def test_prism_meshes_topology_change_falls_back_to_extrusion():
+    """When adjacent z-key regions have mismatched topology (e.g. different
+    polygon counts from disjoint cuts at different z), the dispatcher falls
+    back to vertical extrusion of the lower region instead of crashing.
+
+    Emits a UserWarning so the approximation is visible.
+    """
+    import warnings
+
+    import klayout.db as kdb
+
+    from gdswell.visualization import _prism_meshes
+
+    dbu = 0.001
+    # Bottom: one square. Top: two disjoint squares. Different polygon counts.
+    bottom = kdb.Region(
+        kdb.Polygon(
+            [kdb.Point(0, 0), kdb.Point(1000, 0), kdb.Point(1000, 1000), kdb.Point(0, 1000)]
+        )
+    )
+    top = kdb.Region()
+    top.insert(
+        kdb.Polygon([kdb.Point(0, 0), kdb.Point(400, 0), kdb.Point(400, 400), kdb.Point(0, 400)])
+    )
+    top.insert(
+        kdb.Polygon(
+            [kdb.Point(600, 0), kdb.Point(1000, 0), kdb.Point(1000, 400), kdb.Point(600, 400)]
+        )
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        meshes = _prism_meshes({0.0: bottom, 0.22: top}, dbu=dbu, entry_name="Approx")
+    # At least one mesh produced (the fallback extruded the bottom region).
+    assert len(meshes) >= 1
+    # The user got a warning about the fallback.
+    assert any("Approx" in str(w.message) for w in caught)
