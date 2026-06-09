@@ -18,7 +18,14 @@ from gdswell.layer import (
     LayerSize,
     LayerTransformed,
 )
-from gdswell.stackup import ResolvedPrism, ResolvedStackup, Stackup, StackupEntry, StackupItem
+from gdswell.stackup import (
+    ResolvedPrism,
+    ResolvedStackup,
+    ResolvedStackup2D,
+    Stackup,
+    StackupEntry,
+    StackupItem,
+)
 
 
 class Pdk(gw.Layer, Enum):
@@ -458,6 +465,7 @@ def test_resolve_single_key_zero_thickness_sheet_preserved():
 def test_top_level_exports():
     import gdswell as gw
     from gdswell.stackup import ResolvedPolygon2D, ResolvedStackup2D
+    from gdswell.visualization import plot_cross_section
 
     assert gw.StackupEntry is StackupEntry
     assert gw.Stackup is Stackup
@@ -465,6 +473,7 @@ def test_top_level_exports():
     assert gw.ResolvedStackup is ResolvedStackup
     assert gw.ResolvedPolygon2D is ResolvedPolygon2D
     assert gw.ResolvedStackup2D is ResolvedStackup2D
+    assert gw.plot_cross_section is plot_cross_section
 
 
 def test_resolved_prism_has_keep_default_true():
@@ -1075,3 +1084,169 @@ def test_resolve_cross_section_topology_mismatch_impossible():
     region = rs2.polygons[0].region
     polys = list(region.each())
     assert len(polys) == 1  # one trapezoid; no exception raised.
+
+
+# ---- dbu round-trip ------------------------------------------------------
+
+
+def test_resolved_stackup_dbu_default():
+    """ResolvedStackup default dbu is 0.001 (klayout's default 1 nm grid)."""
+    rs = ResolvedStackup()
+    assert rs.dbu == 0.001
+
+
+def test_resolve_populates_dbu_from_cell():
+    """Stackup.resolve(cell) populates dbu from cell.layout.kdb.dbu."""
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    rs = Stackup.of(si).resolve(cell)
+    assert rs.dbu == cell.layout.kdb.dbu
+
+
+def test_resolved_stackup_2d_dbu_default():
+    """ResolvedStackup2D default dbu is 0.001."""
+    from gdswell.stackup import ResolvedStackup2D
+
+    rs2 = ResolvedStackup2D()
+    assert rs2.dbu == 0.001
+
+
+def test_resolve_cutline_populates_dbu():
+    """resolve_cutline populates dbu from cell.layout.kdb.dbu."""
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    rs2 = Stackup.of(si).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
+    assert rs2.dbu == cell.layout.kdb.dbu
+
+
+def test_resolve_cross_section_populates_dbu():
+    """resolve_cross_section inherits dbu from its synthetic Cell (klayout default 0.001)."""
+    from gdswell.cross_section import CrossSection, LayerSection
+
+    xs = CrossSection(
+        layer_sections=(LayerSection(name="core", layer=Pdk.WG, width=0.5, offset=0.0),)
+    )
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    rs2 = Stackup.of(si).resolve_cross_section(xs)
+    assert rs2.dbu == 0.001
+
+
+# ---- plot_cross_section --------------------------------------------------
+
+
+def test_plot_cross_section_returns_axes():
+    """plot_cross_section returns a matplotlib Axes."""
+    import matplotlib
+
+    matplotlib.use("Agg")  # non-interactive backend for CI
+    from gdswell.visualization import plot_cross_section
+
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    rs2 = Stackup.of(si).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
+    ax = plot_cross_section(rs2)
+    import matplotlib.axes
+
+    assert isinstance(ax, matplotlib.axes.Axes)
+
+
+def test_plot_cross_section_uses_provided_ax():
+    """When passed an existing Axes, plot_cross_section draws on it and returns it."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from gdswell.visualization import plot_cross_section
+
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    rs2 = Stackup.of(si).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
+    fig, my_ax = plt.subplots()
+    returned_ax = plot_cross_section(rs2, ax=my_ax)
+    assert returned_ax is my_ax
+
+
+def test_plot_cross_section_empty_input_no_raise():
+    """plot_cross_section accepts an empty ResolvedStackup2D without raising."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from gdswell.visualization import plot_cross_section
+
+    ax = plot_cross_section(ResolvedStackup2D())
+    import matplotlib.axes
+
+    assert isinstance(ax, matplotlib.axes.Axes)
+
+
+def test_plot_cross_section_legend_entries_match_kept_names():
+    """Legend has one entry per unique kept prism name."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from gdswell.visualization import plot_cross_section
+
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    bot = StackupEntry.uniform("Bot", Pdk.CLAD, -1.0, -0.5)
+    rs2 = (si + bot).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
+    ax = plot_cross_section(rs2)
+    legend = ax.get_legend()
+    assert legend is not None
+    labels = [t.get_text() for t in legend.get_texts()]
+    assert sorted(labels) == ["Bot", "Si"]
+
+
+def test_plot_cross_section_apply_cuts_omits_fully_carved_region():
+    """With apply_cuts=True, a prism whose region is fully covered by a
+    later cutter contributes no patches. With apply_cuts=False, it still
+    appears."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from gdswell.visualization import plot_cross_section
+
+    cell = _cell_with_overlap()
+    # A's xy region (the 1x1 WG square) is entirely covered by B (the 2x2 CLAD
+    # square). After painter's-algorithm 2D carve, A is fully removed.
+    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    rs2 = (a + b).resolve_cutline(cell, _cutline((-2.0, 0.5), (2.0, 0.5)))
+
+    # apply_cuts=True: A's patches absent from the legend (its final region is empty).
+    ax_cut = plot_cross_section(rs2, apply_cuts=True)
+    legend_cut = ax_cut.get_legend()
+    assert legend_cut is not None
+    labels_cut = [t.get_text() for t in legend_cut.get_texts()]
+    assert "A" not in labels_cut
+    assert "B" in labels_cut
+
+    # apply_cuts=False: A appears (raw region).
+    ax_raw = plot_cross_section(rs2, apply_cuts=False)
+    legend_raw = ax_raw.get_legend()
+    assert legend_raw is not None
+    labels_raw = [t.get_text() for t in legend_raw.get_texts()]
+    assert "A" in labels_raw
+    assert "B" in labels_raw
+
+
+def test_plot_cross_section_color_map_override():
+    """color_map overrides the palette for the named prism."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.colors as mcolors
+
+    from gdswell.visualization import plot_cross_section
+
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    rs2 = Stackup.of(si).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
+    ax = plot_cross_section(rs2, color_map={"Si": "#ff0000"})
+    # Find the patch labelled "Si" and check its facecolor.
+    target = mcolors.to_rgba("#ff0000")
+    patches_for_si = [p for p in ax.patches if p.get_label() == "Si"]
+    assert patches_for_si, "Si patch not rendered"
+    # Compare RGB (ignore alpha, which the plotter may set independently).
+    assert patches_for_si[0].get_facecolor()[:3] == target[:3]

@@ -237,6 +237,59 @@ class Stackup:
         body = ", ".join(f"{'+' if it.keep else '-'}{it.entry!r}" for it in self.items)
         return f"Stackup([{body}])"
 
+    def __str__(self) -> str:
+        """Render the stackup as a human-readable table in painter's order.
+
+        Columns: index, keep flag, entry name, z (µm), layer recipe. Entries
+        with two equal-recipe z-keys collapse to a ``zmin → zmax`` row; entries
+        with three or more keys (or differing recipes per key) get one row per
+        key, so slanted-sidewall morphs stay visible at a glance.
+        """
+        if not self.items:
+            return "Stackup: (empty)"
+
+        cols = ("#", "keep", "name", "z (µm)", "layer")
+        rows: list[list[str]] = []
+        for i, it in enumerate(self.items):
+            zs = sorted(it.entry.z_to_layer)
+            keep_mark = "+" if it.keep else "−"
+            uniform = (
+                len(zs) == 2
+                and it.entry.z_to_layer[zs[0]]._hash_string
+                == it.entry.z_to_layer[zs[1]]._hash_string
+            )
+            if uniform:
+                rows.append(
+                    [
+                        str(i),
+                        keep_mark,
+                        it.entry.name,
+                        f"{zs[0]:>7.3f} → {zs[-1]:.3f}",
+                        _short_layer_label(it.entry.z_to_layer[zs[0]]),
+                    ]
+                )
+            else:
+                for j, z in enumerate(zs):
+                    rows.append(
+                        [
+                            str(i) if j == 0 else "",
+                            keep_mark if j == 0 else "",
+                            it.entry.name if j == 0 else "",
+                            f"{z:>7.3f}",
+                            _short_layer_label(it.entry.z_to_layer[z]),
+                        ]
+                    )
+
+        widths = [max(len(cols[k]), *(len(r[k]) for r in rows)) for k in range(len(cols))]
+        sep = "─" * (sum(widths) + 2 * (len(cols) - 1))
+
+        def fmt(row: list[str] | tuple[str, ...]) -> str:
+            return "  ".join(c.ljust(w) for c, w in zip(row, widths))
+
+        n = len(self.items)
+        header_line = f"Stackup: {n} {'entry' if n == 1 else 'entries'} (painter's order)"
+        return "\n".join((header_line, sep, fmt(cols), sep, *(fmt(r) for r in rows), sep))
+
     def resolve(self, cell: "gw.Cell") -> ResolvedStackup:
         """Materialize each entry's xy regions at its own z-keys (no resampling).
         Populate ``cut_by`` via O(N²) 3D-bbox overlap (z-range gate then xy-bbox
@@ -276,7 +329,7 @@ class Stackup:
             )
             for i, it in enumerate(self.items)
         )
-        return ResolvedStackup(prisms=prisms)
+        return ResolvedStackup(prisms=prisms, dbu=cell.layout.kdb.dbu)
 
     def resolve_cutline(
         self,
@@ -342,7 +395,7 @@ class Stackup:
             )
             for i, it in enumerate(self.items)
         )
-        return ResolvedStackup2D(polygons=polygons)
+        return ResolvedStackup2D(polygons=polygons, dbu=dbu)
 
     def resolve_cross_section(
         self,
@@ -380,6 +433,21 @@ class Stackup:
             )
         cell, cutline = _build_synthetic_straight(xs_static)
         return self.resolve_cutline(cell, cutline)
+
+
+def _short_layer_label(layer: LayerBase) -> str:
+    """Compact label for a ``LayerBase`` suitable for table output.
+
+    ``str(layer)`` is already nice for ``Layer`` enum members (e.g. ``Pdk.WG``)
+    but falls back to the dataclass ``__repr__`` for derived recipes, which
+    embeds the verbose ``<Pdk.WG: Layer(1, 0)>`` form of each child layer.
+    This collapses those enum-member reprs back to their dotted name so a
+    nested recipe like ``LayerSize(layer=Pdk.WG, dx=-0.05, dy=None)`` stays
+    readable.
+    """
+    import re
+
+    return re.sub(r"<(\w+(?:\.\w+)+): Layer\(\d+, \d+\)>", r"\1", str(layer))
 
 
 def _entry_3d_bbox(
@@ -452,9 +520,15 @@ class ResolvedStackup:
     1:1 indexing invariant lets ``ResolvedPrism.cut_by`` use compact integer
     indices and matches the painter's-order semantics already encoded in the
     input ``Stackup``.
+
+    ``dbu`` is the database unit (µm per integer dbu) inherited from the
+    source ``Cell.layout.kdb.dbu``. All ``kdb.Region`` polygons in this
+    container's ``ResolvedPrism.z_to_region`` use this dbu; consumers
+    that convert to µm should multiply integer dbu coordinates by it.
     """
 
     prisms: tuple[ResolvedPrism, ...] = ()
+    dbu: float = 0.001
 
 
 @dataclass(frozen=True)
@@ -488,9 +562,14 @@ class ResolvedStackup2D:
     Same invariants as ``ResolvedStackup``: both ``keep=True`` and
     ``keep=False`` slots appear; index ``i`` in ``polygons`` matches slot
     ``i`` in ``Stackup.items``; ``cut_by`` indices reference this tuple.
+
+    ``dbu`` is the database unit (µm per integer dbu) inherited from the
+    source ``Cell.layout.kdb.dbu``. Convert dbu integer coordinates in
+    each ``ResolvedPolygon2D.region`` to µm by multiplying by ``dbu``.
     """
 
     polygons: tuple[ResolvedPolygon2D, ...] = ()
+    dbu: float = 0.001
 
 
 def _build_synthetic_straight(

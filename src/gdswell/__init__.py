@@ -27,6 +27,7 @@ from gdswell.stackup import (
     StackupEntry,
 )
 from gdswell.stats import get_stats, print_stats, reset_stats
+from gdswell.visualization import plot_cross_section
 
 __all__ = [
     "config",
@@ -56,6 +57,7 @@ __all__ = [
     "route_u",
     "chain_components",
     "get_stats",
+    "plot_cross_section",
     "print_stats",
     "reset_stats",
 ]
