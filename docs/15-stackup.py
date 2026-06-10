@@ -18,16 +18,16 @@
 #
 # A `Stackup` describes how the 2D layers in your layout extend into 3D — what
 # material lives at what height, how its xy footprint morphs with z, and which
-# entries override which. From the same `Stackup` you can produce either of two
+# entries override which. From the same `Stackup` you can currently produce either of two
 # outputs:
 #
 # - **3D**: `stack.resolve(cell)` returns a `ResolvedStackup` describing how
-#   each layer polygon should be extruded and cut against the others.
+#   each layer polygon should be extruded and cut against the others using a CAD tool.
 # - **2D**: `stack.resolve_cutline(cell, cutline)` or
 #   `stack.resolve_cross_section(cs)` returns a `ResolvedStackup2D` containing
-#   the 2D polygons of the cross-sectional view.
+#   the (already processed) 2D polygons of the cross-sectional view.
 #
-# Both outputs share the same painter's-algorithm metadata: `mesh_order`,
+# Both outputs share the same minimalistic painter's-algorithm metadata: `mesh_order`,
 # `keep`, and `cut_by`. This page works through both outputs on a small but
 # realistic silicon-photonic stack: a rib waveguide with a TiN heater wired
 # out to a metal pad.
@@ -42,15 +42,16 @@ import gdswell as gw
 # %% [markdown]
 # ## A silicon-photonic PDK
 #
-# A handful of layers is enough to express a complete rib-waveguide device. The
-# `DEVICE` layer plays the role of "everywhere this chiplet exists" — we draw
-# it once over the whole device extent and reuse it as the xy footprint for
-# every bulk medium (Si substrate, buried oxide, oxide cladding).
+# A handful of layers is enough to express a complete rib-waveguide device.
+# For the bulk media (Si substrate, buried oxide, oxide cladding) we use the
+# smart `AllLayers().bbox()` recipe as the xy footprint: it expands at resolve
+# time to the bounding box of every shape in the cell, so the bulk bodies
+# automatically grow to enclose whatever the device draws — no dedicated
+# "device extent" layer required.
 
 
 # %%
-class Pdk(gw.Layer, Enum):
-    DEVICE = (15, 0)  # device extent — substrate, BOX, cladding bodies
+class PDK(gw.Layer, Enum):
     WG = (1, 0)  # full-Si rib (220 nm)
     SLAB = (2, 0)  # partial-etch Si slab (70 nm) under and beside the rib
     HEATER = (10, 0)  # TiN heater above the rib
@@ -61,39 +62,43 @@ class Pdk(gw.Layer, Enum):
 # %% [markdown]
 # ## Building entries
 #
-# A `StackupEntry` is one logical 3D body: a name plus a `z_to_layer` dict
-# mapping absolute z values (µm) to `LayerBase` recipes. The convenience
-# constructor `StackupEntry.uniform(name, layer, zmin, zmax)` builds a 2-key
-# entry with vertical sidewalls; passing the dict directly lets you vary the
+# A `StackupEntry` is one logical 3D body. Currently this is a name plus a `z_to_layer` dict
+# mapping absolute z values (µm) to `LayerBase` recipes (with room to expand to more intricate
+# geometries).
+# - The convenience constructor `StackupEntry.uniform(name, layer, zmin, zmax)` builds a 2-key
+# entry with vertical sidewalls
+# - Passing the dict directly lets you vary the
 # xy recipe with z to produce slanted sidewalls or a topology that morphs
 # between the keys.
 
 # %%
-# Bulk media — substrate, buried oxide, oxide claddings. All reuse the
-# device-extent footprint, so the cross-section will show them filling the
-# whole frame.
-substrate = gw.StackupEntry.uniform("Substrate", Pdk.DEVICE, -2.0, -1.0)
-box = gw.StackupEntry.uniform("BOX", Pdk.DEVICE, -1.0, 0.0)
-lower_clad = gw.StackupEntry.uniform("Lower_clad", Pdk.DEVICE, 0.0, 1.5)
-upper_clad = gw.StackupEntry.uniform("Upper_clad", Pdk.DEVICE, 1.6, 2.5)
+# Bulk media — substrate, buried oxide, oxide claddings. All use the
+# `AllLayers().bbox()` smart recipe, which resolves to the bounding box of
+# every shape in the cell — so the cross-section will show them filling the
+# whole frame regardless of what the device draws.
+device_extent = gw.AllLayers().bbox()
+substrate = gw.StackupEntry.uniform("Substrate", device_extent, -2.0, -1.0)
+box = gw.StackupEntry.uniform("BOX", device_extent, -1.0, 0.0)
+lower_clad = gw.StackupEntry.uniform("Lower_clad", device_extent, 0.0, 1.5)
+upper_clad = gw.StackupEntry.uniform("Upper_clad", device_extent, 1.6, 2.5)
 
 # Silicon: a 70 nm slab and the 220 nm rib that sits on top of it. The rib
 # uses a 50 nm-per-side slanted sidewall via a z-varying recipe.
-si_slab = gw.StackupEntry.uniform("Si_slab", Pdk.SLAB, 0.0, 0.07)
-si_rib = gw.StackupEntry("Si_rib", {0.0: Pdk.WG, 0.22: Pdk.WG.size(-0.05)})
+si_slab = gw.StackupEntry.uniform("Si_slab", PDK.SLAB, 0.0, 0.07)
+si_rib = gw.StackupEntry("Si_rib", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
 
 # TiN heater, a via column, and a metal-1 pad.
-heater = gw.StackupEntry.uniform("Heater", Pdk.HEATER, 1.5, 1.6)
-via1 = gw.StackupEntry.uniform("Via1", Pdk.VIA1, 1.55, 2.5)
-metal1 = gw.StackupEntry.uniform("Metal1", Pdk.METAL1, 2.5, 3.5)
+heater = gw.StackupEntry.uniform("Heater", PDK.HEATER, 1.5, 1.6)
+via1 = gw.StackupEntry.uniform("Via1", PDK.VIA1, 1.55, 2.5)
+metal1 = gw.StackupEntry.uniform("Metal1", PDK.METAL1, 2.5, 3.5)
 
 # %% [markdown]
 # ## Composing with `+` and `-`
 #
 # `Stackup` composition is strict painter's order (left-to-right). `+` appends
 # an entry with `keep=True`; `-` appends it with `keep=False` — the entry's
-# geometry still participates in later `cut_by` computations, but downstream
-# backends will not emit it as an output volume. Use parentheses for explicit
+# geometry still participates in later `cut_by` computations, but it can tell downstream
+# backends not to emit it as an output volume. Use parentheses for explicit
 # grouping when mixing the two.
 
 # %%
@@ -125,28 +130,28 @@ cell = gw.Cell(layout=layout)
 L = 20.0  # propagation length, µm
 W = 8.0  # transverse half-extent, µm
 
-# Device extent — every bulk-medium entry resolves through this polygon.
-cell.add_polygon([(0.0, -W), (L, -W), (L, W), (0.0, W)], Pdk.DEVICE)
+# No explicit device-extent polygon needed — the bulk-medium entries use
+# `AllLayers().bbox()`, which auto-expands to enclose the geometry below.
 
 # Si rib (500 nm) and surrounding slab (6 µm).
-cell.add_polygon([(0.0, -0.25), (L, -0.25), (L, 0.25), (0.0, 0.25)], Pdk.WG)
-cell.add_polygon([(0.0, -3.0), (L, -3.0), (L, 3.0), (0.0, 3.0)], Pdk.SLAB)
+cell.add_polygon([(0.0, -0.25), (L, -0.25), (L, 0.25), (0.0, 0.25)], PDK.WG)
+cell.add_polygon([(0.0, -3.0), (L, -3.0), (L, 3.0), (0.0, 3.0)], PDK.SLAB)
 
 # TiN heater: a 2 µm strip over the rib plus a 6 × 3 µm contact pad south of it.
-cell.add_polygon([(0.0, -1.0), (L, -1.0), (L, 1.0), (0.0, 1.0)], Pdk.HEATER)
+cell.add_polygon([(0.0, -1.0), (L, -1.0), (L, 1.0), (0.0, 1.0)], PDK.HEATER)
 cell.add_polygon(
     [(L / 2 - 3, -5.5), (L / 2 + 3, -5.5), (L / 2 + 3, -2.5), (L / 2 - 3, -2.5)],
-    Pdk.HEATER,
+    PDK.HEATER,
 )
 
 # Via1 (2 × 0.5 µm column) and a METAL1 pad sized like the heater pad.
 cell.add_polygon(
     [(L / 2 - 1, -5.0), (L / 2 + 1, -5.0), (L / 2 + 1, -4.5), (L / 2 - 1, -4.5)],
-    Pdk.VIA1,
+    PDK.VIA1,
 )
 cell.add_polygon(
     [(L / 2 - 3, -5.5), (L / 2 + 3, -5.5), (L / 2 + 3, -2.5), (L / 2 - 3, -2.5)],
-    Pdk.METAL1,
+    PDK.METAL1,
 )
 
 # %% [markdown]
@@ -257,12 +262,11 @@ plt.show()
 # ## The `-` operator: `keep=False` cutters
 #
 # `-` adds an entry as a *cutter*: it participates in `cut_by` like any other
-# slot, but downstream backends don't emit it as an output volume. A typical
-# use is an etch mask that removes oxide from a region without leaving an
-# explicit "etched" material behind.
+# slot, but downstream backends don't emit it as an output volume. For physical simulations,
+# this provides a concise way to "remove" geometry domains, while being able to tag their surfaces.
 
 # %%
-etch = gw.StackupEntry.uniform("Etch", Pdk.SLAB.size(0.5), 1.5, 2.5)
+etch = gw.StackupEntry.uniform("Etch", PDK.SLAB.size(0.5), 1.5, 2.5)
 carved_stack = (
     substrate
     + box
@@ -295,9 +299,8 @@ plt.show()
 # %%
 xs = gw.CrossSection(
     layer_sections=(
-        gw.LayerSection(name="device", layer=Pdk.DEVICE, width=16.0, offset=0.0),
-        gw.LayerSection(name="slab", layer=Pdk.SLAB, width=6.0, offset=0.0),
-        gw.LayerSection(name="rib", layer=Pdk.WG, width=0.5, offset=0.0),
+        gw.LayerSection(name="slab", layer=PDK.SLAB, width=6.0, offset=0.0),
+        gw.LayerSection(name="rib", layer=PDK.WG, width=0.5, offset=0.0),
     )
 )
 
@@ -307,9 +310,22 @@ resolved_xs = rib_stack.resolve_cross_section(xs)
 
 fig, ax = plt.subplots(figsize=(8, 3.5))
 gw.plot_cross_section(resolved_xs, ax=ax)
-ax.set_xlim(6.5, 9.5)
 ax.set_ylim(-0.1, 0.35)
 ax.set_aspect("auto")
 ax.set_title("Cross-section evaluated directly from a CrossSection (zoom on Si)")
 plt.tight_layout()
 plt.show()
+
+# %% [markdown]
+# ## Improvements
+#
+# This framework is extremely modular. We can add subclasses or keywords to StackupEntries to log
+# information about more intricate geometries (e.g. filleted corners). We could also generate sets
+# of StackupEntries
+# from Stackup, for instance to emulate conformal claddings that calculate their effective
+# footprints
+# and levels from
+# sets of StackupEntries in a Stackup. Alternatively, we could output "process" recipes for
+# process simulation
+# instead of already-rendered prisms.
+# %%

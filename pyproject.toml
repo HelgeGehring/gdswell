@@ -21,6 +21,7 @@ dev = [
 ]
 docs = [
     "matplotlib",
+    "pyvista",
 ]
 
 [dependency-groups]

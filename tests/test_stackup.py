@@ -28,49 +28,49 @@ from gdswell.stackup import (
 )
 
 
-class Pdk(gw.Layer, Enum):
+class PDK(gw.Layer, Enum):
     WG = (1, 0)
     CLAD = (2, 0)
     MASK = (3, 0)
 
 
 def test_entry_construction_minimum():
-    e = StackupEntry("Si", {0.0: Pdk.WG, 0.22: Pdk.WG.size(-0.05)})
+    e = StackupEntry("Si", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
     assert e.name == "Si"
     assert set(e.z_to_layer.keys()) == {0.0, 0.22}
 
 
 def test_entry_single_key_allowed():
     # Zero-thickness sheet — useful as boundary tag / cut surface.
-    e = StackupEntry("Sheet", {0.0: Pdk.WG})
+    e = StackupEntry("Sheet", {0.0: PDK.WG})
     assert len(e.z_to_layer) == 1
 
 
 def test_entry_uniform_helper():
-    e = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    e = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
     assert e.name == "Si"
-    assert e.z_to_layer == {0.0: Pdk.WG, 0.22: Pdk.WG}
+    assert e.z_to_layer == {0.0: PDK.WG, 0.22: PDK.WG}
 
 
 def test_entry_equal_and_hashable():
-    a = StackupEntry("Si", {0.0: Pdk.WG, 0.22: Pdk.WG.size(-0.05)})
-    b = StackupEntry("Si", {0.22: Pdk.WG.size(-0.05), 0.0: Pdk.WG})  # dict order
+    a = StackupEntry("Si", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
+    b = StackupEntry("Si", {0.22: PDK.WG.size(-0.05), 0.0: PDK.WG})  # dict order
     assert a == b
     assert hash(a) == hash(b)
     # Different name → not equal
-    c = StackupEntry("SiN", {0.0: Pdk.WG, 0.22: Pdk.WG.size(-0.05)})
+    c = StackupEntry("SiN", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
     assert a != c
 
 
 def test_entry_hash_string_deterministic():
-    a = StackupEntry("Si", {0.0: Pdk.WG, 0.22: Pdk.WG.size(-0.05)})
-    b = StackupEntry("Si", {0.22: Pdk.WG.size(-0.05), 0.0: Pdk.WG})
+    a = StackupEntry("Si", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
+    b = StackupEntry("Si", {0.22: PDK.WG.size(-0.05), 0.0: PDK.WG})
     assert a._hash_string == b._hash_string
     assert "Si" in a._hash_string
 
 
 def _e(name, *zs):
-    return StackupEntry(name, {z: Pdk.WG for z in zs})
+    return StackupEntry(name, {z: PDK.WG for z in zs})
 
 
 def test_stackup_from_entry_plus_entry():
@@ -147,7 +147,7 @@ def test_stackup_hash_string_includes_keep_flag():
 
 
 def test_entry_size_wraps_every_layer():
-    e = StackupEntry("Si", {0.0: Pdk.WG, 1.0: Pdk.WG.size(-0.05)})
+    e = StackupEntry("Si", {0.0: PDK.WG, 1.0: PDK.WG.size(-0.05)})
     sized = e.size(0.1)
     assert isinstance(sized, StackupEntry)
     assert sized.name == "Si"
@@ -158,7 +158,7 @@ def test_entry_size_wraps_every_layer():
 
 
 def test_entry_size_dy_independent():
-    e = StackupEntry.uniform("X", Pdk.WG, 0.0, 1.0)
+    e = StackupEntry.uniform("X", PDK.WG, 0.0, 1.0)
     sized = e.size(0.2, 0.3)
     for L in sized.z_to_layer.values():
         assert isinstance(L, LayerSize)
@@ -166,7 +166,7 @@ def test_entry_size_dy_independent():
 
 
 def test_entry_transformed_wraps_every_layer():
-    e = StackupEntry.uniform("X", Pdk.WG, 0.0, 1.0)
+    e = StackupEntry.uniform("X", PDK.WG, 0.0, 1.0)
     t = kdb.DTrans(1.0, 2.0)
     out = e.transformed(t)
     for L in out.z_to_layer.values():
@@ -174,31 +174,31 @@ def test_entry_transformed_wraps_every_layer():
 
 
 def test_entry_round_corners_wraps_every_layer():
-    e = StackupEntry.uniform("X", Pdk.WG, 0.0, 1.0)
+    e = StackupEntry.uniform("X", PDK.WG, 0.0, 1.0)
     out = e.round_corners(0.1, 0.1, 16)
     for L in out.z_to_layer.values():
         assert isinstance(L, LayerRounded)
 
 
 def test_entry_bbox_wraps_every_layer():
-    e = StackupEntry.uniform("X", Pdk.WG, 0.0, 1.0)
+    e = StackupEntry.uniform("X", PDK.WG, 0.0, 1.0)
     out = e.bbox()
     for L in out.z_to_layer.values():
         assert isinstance(L, LayerBBox)
 
 
 def test_entry_map_layers_general():
-    e = StackupEntry("X", {0.0: Pdk.WG, 1.0: Pdk.CLAD})
-    out = e.map_layers(lambda L: L + Pdk.MASK)  # boolean union with MASK
+    e = StackupEntry("X", {0.0: PDK.WG, 1.0: PDK.CLAD})
+    out = e.map_layers(lambda L: L + PDK.MASK)  # boolean union with MASK
     for L in out.z_to_layer.values():
-        # The result is a LayerUnion of the original and Pdk.MASK
+        # The result is a LayerUnion of the original and PDK.MASK
         assert hasattr(L, "left") and hasattr(L, "right")
 
 
 def test_stackup_size_applies_to_all_entries_including_cuts():
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
-    c = StackupEntry.uniform("C", Pdk.MASK, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
+    c = StackupEntry.uniform("C", PDK.MASK, 0.0, 1.0)
     stack = (a + b - c).size(0.1)
     assert [(it.entry.name, it.keep) for it in stack.items] == [
         ("A", True),
@@ -212,8 +212,8 @@ def test_stackup_size_applies_to_all_entries_including_cuts():
 
 
 def test_stackup_map_layers_passthrough():
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     stack = a + b
     out = stack.map_layers(lambda L: L.size(0.5))
     for it in out.items:
@@ -223,52 +223,52 @@ def test_stackup_map_layers_passthrough():
 
 
 def test_entry_filters_wrap_every_layer():
-    e = StackupEntry.uniform("X", Pdk.WG, 0.0, 1.0)
+    e = StackupEntry.uniform("X", PDK.WG, 0.0, 1.0)
 
-    inter = e.interacting(Pdk.MASK)
+    inter = e.interacting(PDK.MASK)
     for L in inter.z_to_layer.values():
         assert isinstance(L, LayerInteracting)
 
-    not_inter = e.interacting(Pdk.MASK, invert=True)
+    not_inter = e.interacting(PDK.MASK, invert=True)
     for L in not_inter.z_to_layer.values():
         assert isinstance(L, LayerNotInteracting)
 
-    ins = e.inside(Pdk.MASK)
+    ins = e.inside(PDK.MASK)
     for L in ins.z_to_layer.values():
         assert isinstance(L, LayerInside)
 
-    outs = e.outside(Pdk.MASK)
+    outs = e.outside(PDK.MASK)
     for L in outs.z_to_layer.values():
         assert isinstance(L, LayerOutside)
 
-    overlap = e.overlapping(Pdk.MASK, min_count=2)
+    overlap = e.overlapping(PDK.MASK, min_count=2)
     for L in overlap.z_to_layer.values():
         assert isinstance(L, LayerOverlapping)
         assert L.min_count == 2
 
 
 def test_stackup_filters_apply_to_all_entries():
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
-    out = (a + b).inside(Pdk.MASK)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
+    out = (a + b).inside(PDK.MASK)
     for it in out.items:
         for L in it.entry.z_to_layer.values():
             assert isinstance(L, LayerInside)
 
 
 def _cell_with_two_squares():
-    """A cell with a 1x1 µm square on Pdk.WG at origin, and another on Pdk.CLAD shifted right."""
+    """A cell with a 1x1 µm square on PDK.WG at origin, and another on PDK.CLAD shifted right."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
-    cell.add_polygon([(2, 0), (3, 0), (3, 1), (2, 1)], Pdk.CLAD)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.WG)
+    cell.add_polygon([(2, 0), (3, 0), (3, 1), (2, 1)], PDK.CLAD)
     return cell
 
 
 def test_resolve_non_overlapping_entries():
     cell = _cell_with_two_squares()
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
-    bot = StackupEntry.uniform("Bot", Pdk.CLAD, -1.0, -0.5)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    bot = StackupEntry.uniform("Bot", PDK.CLAD, -1.0, -0.5)
     rs = (si + bot).resolve(cell)
 
     assert len(rs.prisms) == 2
@@ -288,8 +288,8 @@ def test_resolve_non_overlapping_entries():
 
 def test_resolve_returns_frozen_dataclass():
     cell = _cell_with_two_squares()
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 1.0)
-    other = StackupEntry.uniform("Other", Pdk.CLAD, 2.0, 3.0)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 1.0)
+    other = StackupEntry.uniform("Other", PDK.CLAD, 2.0, 3.0)
     p = (si + other).resolve(cell).prisms[0]
     assert dataclasses.is_dataclass(p)
     # frozen → reassignment must raise
@@ -304,7 +304,7 @@ def test_resolve_returns_frozen_dataclass():
 def test_entry_resolve_via_stackup_singleton():
     """A single StackupEntry, lifted into a 1-item Stackup, resolves cleanly."""
     cell = _cell_with_two_squares()
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
     prisms = Stackup.of(si).resolve(cell).prisms
     assert len(prisms) == 1
     assert prisms[0].name == "Si"
@@ -315,8 +315,8 @@ def _cell_with_overlap():
     """1x1 square on WG at origin; bigger 2x2 square on CLAD covering it."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
-    cell.add_polygon([(-1, -1), (1, -1), (1, 1), (-1, 1)], Pdk.CLAD)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.WG)
+    cell.add_polygon([(-1, -1), (1, -1), (1, 1), (-1, 1)], PDK.CLAD)
     return cell
 
 
@@ -325,8 +325,8 @@ def test_resolve_overlapping_entries_keep_raw_regions():
     both appear with their un-subtracted raw regions; the painter's
     'later-wins' semantics is now the 3D backend's responsibility."""
     cell = _cell_with_overlap()
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     rs = (a + b).resolve(cell)
     by_name = {p.name: p for p in rs.prisms}
     # Both entries present.
@@ -341,11 +341,11 @@ def test_resolve_partial_overlap_keeps_raw_regions():
     """Resolve no longer carves earlier entries; both keep their raw regions."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], Pdk.WG)
-    cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], Pdk.CLAD)
+    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], PDK.WG)
+    cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], PDK.CLAD)
 
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     rs = (a + b).resolve(cell)
     by_name = {p.name: p for p in rs.prisms}
     # A's raw region: 2x1 = 2 µm² (un-carved).
@@ -358,11 +358,11 @@ def test_resolve_no_global_z_resample():
     """Each entry keeps its own z-keys; no resampling, no morph."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (2, 0), (2, 2), (0, 2)], Pdk.WG)
-    cell.add_polygon([(0, 0), (2, 0), (2, 2), (0, 2)], Pdk.CLAD)
+    cell.add_polygon([(0, 0), (2, 0), (2, 2), (0, 2)], PDK.WG)
+    cell.add_polygon([(0, 0), (2, 0), (2, 2), (0, 2)], PDK.CLAD)
 
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.3, 0.6)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.3, 0.6)
     rs = (a + b).resolve(cell)
     by_name = {p.name: p for p in rs.prisms}
 
@@ -380,13 +380,13 @@ def test_resolve_mismatched_topology_no_longer_raises():
     error is gone."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.CLAD)
-    cell.add_polygon([(2, 0), (3, 0), (3, 1), (2, 1)], Pdk.CLAD)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.WG)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.CLAD)
+    cell.add_polygon([(2, 0), (3, 0), (3, 1), (2, 1)], PDK.CLAD)
 
-    a = StackupEntry("A", {0.0: Pdk.WG, 1.0: Pdk.CLAD})
-    b = StackupEntry.uniform("B", Pdk.MASK, 0.5, 0.7)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.MASK)
+    a = StackupEntry("A", {0.0: PDK.WG, 1.0: PDK.CLAD})
+    b = StackupEntry.uniform("B", PDK.MASK, 0.5, 0.7)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.MASK)
 
     # Should not raise.
     rs = (a + b).resolve(cell)
@@ -398,11 +398,11 @@ def test_resolve_keep_false_appears_with_keep_false_flag():
     reference them. The downstream backend skips emitting their volume."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], Pdk.WG)
-    cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], Pdk.CLAD)
+    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], PDK.WG)
+    cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], PDK.CLAD)
 
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     rs = (a - b).resolve(cell)
     assert [p.name for p in rs.prisms] == ["A", "B"]
     assert [p.keep for p in rs.prisms] == [True, False]
@@ -416,11 +416,11 @@ def test_resolve_preserves_empty_entry_slot():
     emitting a volume."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.WG)
     # CLAD has no shapes in this cell.
 
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)  # B's layer is empty
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)  # B's layer is empty
     rs = (a + b).resolve(cell)
     assert [p.name for p in rs.prisms] == ["A", "B"]
     # B's regions are empty at all its z-keys.
@@ -434,12 +434,12 @@ def test_resolve_three_slots_with_duplicate_names_preserved():
     cut_by + mesh_order to compute final volumes."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], Pdk.WG)
-    cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], Pdk.CLAD)
+    cell.add_polygon([(0, 0), (2, 0), (2, 1), (0, 1)], PDK.WG)
+    cell.add_polygon([(1, 0), (2, 0), (2, 1), (1, 1)], PDK.CLAD)
 
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    a2 = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    a2 = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     rs = (a - b + a2).resolve(cell)
 
     assert [p.name for p in rs.prisms] == ["A", "B", "A"]
@@ -454,9 +454,9 @@ def test_resolve_single_key_zero_thickness_sheet_preserved():
     """A single-z-key entry is a zero-thickness sheet; its region is preserved."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.WG)
 
-    sheet = StackupEntry("Sheet", {0.5: Pdk.WG})
+    sheet = StackupEntry("Sheet", {0.5: PDK.WG})
     [p] = Stackup.of(sheet).resolve(cell).prisms
     assert list(p.z_to_region.keys()) == [0.5]
     assert p.z_to_region[0.5].area() == 1_000_000
@@ -524,8 +524,8 @@ def test_resolved_stackup_default_empty():
 def test_resolve_preserves_own_z_keys():
     """Each prism's z_to_region keys exactly match its entry's z_to_layer keys."""
     cell = _cell_with_two_squares()
-    a = StackupEntry("A", {0.0: Pdk.WG, 0.5: Pdk.WG.size(-0.1), 1.0: Pdk.WG.size(-0.2)})
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.7, 1.3)
+    a = StackupEntry("A", {0.0: PDK.WG, 0.5: PDK.WG.size(-0.1), 1.0: PDK.WG.size(-0.2)})
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.7, 1.3)
     rs = (a + b).resolve(cell)
     by_name = {p.name: p for p in rs.prisms}
     assert sorted(by_name["A"].z_to_region) == [0.0, 0.5, 1.0]
@@ -535,9 +535,9 @@ def test_resolve_preserves_own_z_keys():
 def test_resolve_index_invariant():
     """len(rs.prisms) == len(stack.items); each prism.mesh_order == its index."""
     cell = _cell_with_two_squares()
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
-    c = StackupEntry.uniform("C", Pdk.MASK, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
+    c = StackupEntry.uniform("C", PDK.MASK, 0.0, 1.0)
     stack = a + b - c
     rs = stack.resolve(cell)
     assert len(rs.prisms) == len(stack.items) == 3
@@ -549,11 +549,11 @@ def test_resolve_cut_by_disjoint_z_no_edge():
     """Two entries with overlapping xy but disjoint z get no cut_by edge."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.CLAD)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.WG)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.CLAD)
 
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 0.5)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 1.0, 1.5)  # above A, disjoint
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.5)
+    b = StackupEntry.uniform("B", PDK.CLAD, 1.0, 1.5)  # above A, disjoint
     rs = (a + b).resolve(cell)
     by_name = {p.name: p for p in rs.prisms}
     assert by_name["A"].cut_by == ()
@@ -564,11 +564,11 @@ def test_resolve_cut_by_disjoint_xy_bbox_no_edge():
     """Two entries with overlapping z but disjoint xy bboxes get no edge."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
-    cell.add_polygon([(10, 0), (11, 0), (11, 1), (10, 1)], Pdk.CLAD)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.WG)
+    cell.add_polygon([(10, 0), (11, 0), (11, 1), (10, 1)], PDK.CLAD)
 
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     rs = (a + b).resolve(cell)
     by_name = {p.name: p for p in rs.prisms}
     assert by_name["A"].cut_by == ()
@@ -578,8 +578,8 @@ def test_resolve_cut_by_disjoint_xy_bbox_no_edge():
 def test_resolve_cut_by_overlapping_bbox_emits_edge():
     """Two entries whose 3D bboxes overlap → cut_by edge from earlier to later."""
     cell = _cell_with_overlap()
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     rs = (a + b).resolve(cell)
     # Index 0 = A; index 1 = B. cut_by is forward-only.
     assert rs.prisms[0].cut_by == (1,)
@@ -591,10 +591,10 @@ def test_resolve_cut_by_painter_order_forward_only():
     Also confirms at least one prism has a non-empty cut_by so the assertion
     is not vacuously satisfied."""
     cell = _cell_with_overlap()
-    cell.add_polygon([(-1, -1), (1, -1), (1, 1), (-1, 1)], Pdk.MASK)
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
-    c = StackupEntry.uniform("C", Pdk.MASK, 0.0, 1.0)
+    cell.add_polygon([(-1, -1), (1, -1), (1, 1), (-1, 1)], PDK.MASK)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
+    c = StackupEntry.uniform("C", PDK.MASK, 0.0, 1.0)
     rs = (a + b + c).resolve(cell)
     # Guard against vacuous pass: at least one prism must have a cut_by edge.
     assert any(p.cut_by for p in rs.prisms)
@@ -606,8 +606,8 @@ def test_resolve_cut_by_painter_order_forward_only():
 def test_resolve_cut_by_includes_keep_false_cutter():
     """A keep=False cutter still produces a cut_by edge into earlier entries."""
     cell = _cell_with_overlap()
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     rs = (a - b).resolve(cell)
     # B is keep=False but lives in slot 1; A's cut_by references it.
     assert rs.prisms[0].keep is True
@@ -863,8 +863,8 @@ def test_resolve_cutline_returns_resolved_stackup_2d():
     from gdswell.stackup import ResolvedStackup2D
 
     cell = _cell_with_two_squares()
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
-    bot = StackupEntry.uniform("Bot", Pdk.CLAD, -1.0, -0.5)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    bot = StackupEntry.uniform("Bot", PDK.CLAD, -1.0, -0.5)
     rs2 = (si + bot).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
     assert isinstance(rs2, ResolvedStackup2D)
     assert len(rs2.polygons) == 2
@@ -878,8 +878,8 @@ def test_resolve_cutline_single_rectangle_entry():
     y=0.5: 2D region is a 1µm × 0.22µm rectangle in (s, z) space."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.WG)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
     rs2 = Stackup.of(si).resolve_cutline(cell, _cutline((-0.5, 0.5), (1.5, 0.5)))
     region = rs2.polygons[0].region
     region.merge()
@@ -899,8 +899,8 @@ def test_resolve_cutline_trapezoid_from_size_shrink():
     with slanted sidewalls in the (s, z) output."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
-    entry = StackupEntry("Si", {0.0: Pdk.WG, 1.0: Pdk.WG.size(-0.2)})
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.WG)
+    entry = StackupEntry("Si", {0.0: PDK.WG, 1.0: PDK.WG.size(-0.2)})
     rs2 = Stackup.of(entry).resolve_cutline(cell, _cutline((-0.5, 0.5), (1.5, 0.5)))
     region = rs2.polygons[0].region
     polys = list(region.each())
@@ -917,10 +917,10 @@ def test_resolve_cutline_missing_entry_empty_region():
     2D region but keeps its slot in polygons (1:1 invariant)."""
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.WG)
     # CLAD has no shapes in this cell.
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     rs2 = (a + b).resolve_cutline(cell, _cutline((-0.5, 0.5), (1.5, 0.5)))
     assert [p.name for p in rs2.polygons] == ["A", "B"]
     assert not rs2.polygons[0].region.is_empty()
@@ -931,7 +931,7 @@ def test_resolve_cutline_cutline_misses_layout():
     """A cutline that doesn't cross any region → every prism has an empty
     region but is still emitted (1:1 invariant)."""
     cell = _cell_with_two_squares()
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
     rs2 = Stackup.of(si).resolve_cutline(cell, _cutline((100.0, 100.0), (200.0, 100.0)))
     assert len(rs2.polygons) == 1
     assert rs2.polygons[0].region.is_empty()
@@ -944,7 +944,7 @@ def test_resolve_cutline_two_disjoint_components_paired():
     cell = _cell_with_two_squares()
     # _cell_with_two_squares puts WG at (0,0)-(1,1) and CLAD at (2,0)-(3,1).
     # Use a layer recipe that unions both layers so the entry has 2 components.
-    entry = StackupEntry.uniform("Both", Pdk.WG + Pdk.CLAD, 0.0, 0.22)
+    entry = StackupEntry.uniform("Both", PDK.WG + PDK.CLAD, 0.0, 0.22)
     rs2 = Stackup.of(entry).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
     region = rs2.polygons[0].region
     region.merge()
@@ -965,10 +965,10 @@ def test_resolve_cutline_topology_mismatch_raises():
     cell = gw.Cell(layout=layout)
     # WG has one square; CLAD has two squares. Same entry has WG at z=0 and
     # CLAD at z=1 → cutline crosses 1 interval at z=0 and 2 at z=1.
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.CLAD)
-    cell.add_polygon([(2, 0), (3, 0), (3, 1), (2, 1)], Pdk.CLAD)
-    entry = StackupEntry("A", {0.0: Pdk.WG, 1.0: Pdk.CLAD})
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.WG)
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], PDK.CLAD)
+    cell.add_polygon([(2, 0), (3, 0), (3, 1), (2, 1)], PDK.CLAD)
+    entry = StackupEntry("A", {0.0: PDK.WG, 1.0: PDK.CLAD})
     with pytest.raises(NotImplementedError, match="entry 'A'.*z=0.0.*z=1.0"):
         Stackup.of(entry).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
 
@@ -976,8 +976,8 @@ def test_resolve_cutline_topology_mismatch_raises():
 def test_resolve_cutline_cut_by_overlapping_2d_bbox():
     """Two entries whose 2D cutline-plane bboxes overlap → cut_by edge."""
     cell = _cell_with_overlap()
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     rs2 = (a + b).resolve_cutline(cell, _cutline((-2.0, 0.5), (2.0, 0.5)))
     assert rs2.polygons[0].cut_by == (1,)
     assert rs2.polygons[1].cut_by == ()
@@ -987,8 +987,8 @@ def test_resolve_cutline_cut_by_disjoint_2d_bbox_no_edge():
     """Two entries whose 3D bboxes overlap but whose 2D projections don't
     overlap (one above the other in z, disjoint z-ranges) → no edge."""
     cell = _cell_with_overlap()
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 0.4)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.6, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.4)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.6, 1.0)
     rs2 = (a + b).resolve_cutline(cell, _cutline((-2.0, 0.5), (2.0, 0.5)))
     # A's region spans z=0..0.4 µm; B's spans z=0.6..1.0 µm. Disjoint in z
     # (and therefore in 2D bbox), so no cut_by edge.
@@ -1000,8 +1000,8 @@ def test_resolve_cutline_keep_false_appears_with_keep_false_flag():
     """keep=False entries appear in polygons with keep=False so cut_by
     can reference them."""
     cell = _cell_with_overlap()
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     rs2 = (a - b).resolve_cutline(cell, _cutline((-2.0, 0.5), (2.0, 0.5)))
     assert [p.name for p in rs2.polygons] == ["A", "B"]
     assert [p.keep for p in rs2.polygons] == [True, False]
@@ -1017,9 +1017,9 @@ def test_resolve_cross_section_simple_two_layer_profile():
     from gdswell.cross_section import CrossSection, LayerSection
 
     xs = CrossSection(
-        layer_sections=(LayerSection(name="core", layer=Pdk.WG, width=0.5, offset=0.0),)
+        layer_sections=(LayerSection(name="core", layer=PDK.WG, width=0.5, offset=0.0),)
     )
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
     rs2 = Stackup.of(si).resolve_cross_section(xs)
     region = rs2.polygons[0].region
     polys = list(region.each())
@@ -1041,10 +1041,10 @@ def test_resolve_cross_section_returns_resolved_stackup_2d():
     from gdswell.stackup import ResolvedStackup2D
 
     xs = CrossSection(
-        layer_sections=(LayerSection(name="core", layer=Pdk.WG, width=0.5, offset=0.0),)
+        layer_sections=(LayerSection(name="core", layer=PDK.WG, width=0.5, offset=0.0),)
     )
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     rs2 = (a + b).resolve_cross_section(xs)
     assert isinstance(rs2, ResolvedStackup2D)
     assert len(rs2.polygons) == 2
@@ -1058,10 +1058,10 @@ def test_resolve_cross_section_cell_sections_warning():
 
     sub_cell = gw.Cell(layout=gw.Layout())
     xs = CrossSection(
-        layer_sections=(LayerSection(name="core", layer=Pdk.WG, width=0.5, offset=0.0),),
+        layer_sections=(LayerSection(name="core", layer=PDK.WG, width=0.5, offset=0.0),),
         cell_sections=(CellSection(name="anchor", cell=sub_cell, periodicity=10.0),),
     )
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
     with pytest.warns(UserWarning, match="anchor.*resolve_cutline"):
         Stackup.of(si).resolve_cross_section(xs)
 
@@ -1073,13 +1073,13 @@ def test_resolve_cross_section_topology_mismatch_impossible():
     from gdswell.cross_section import CrossSection, LayerSection
 
     xs = CrossSection(
-        layer_sections=(LayerSection(name="core", layer=Pdk.WG, width=0.5, offset=0.0),)
+        layer_sections=(LayerSection(name="core", layer=PDK.WG, width=0.5, offset=0.0),)
     )
     # Entry shrinks WG at the top z-key — would mismatch via a manual
     # resolve_cutline if the cell had multiple disconnected WG components.
     # Through resolve_cross_section the cell has a single rectangle, so
     # the cutline crosses one interval at every z-key.
-    entry = StackupEntry("Si", {0.0: Pdk.WG, 1.0: Pdk.WG.size(-0.1)})
+    entry = StackupEntry("Si", {0.0: PDK.WG, 1.0: PDK.WG.size(-0.1)})
     rs2 = Stackup.of(entry).resolve_cross_section(xs)
     region = rs2.polygons[0].region
     polys = list(region.each())
@@ -1098,7 +1098,7 @@ def test_resolved_stackup_dbu_default():
 def test_resolve_populates_dbu_from_cell():
     """Stackup.resolve(cell) populates dbu from cell.layout.kdb.dbu."""
     cell = _cell_with_two_squares()
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
     rs = Stackup.of(si).resolve(cell)
     assert rs.dbu == cell.layout.kdb.dbu
 
@@ -1114,7 +1114,7 @@ def test_resolved_stackup_2d_dbu_default():
 def test_resolve_cutline_populates_dbu():
     """resolve_cutline populates dbu from cell.layout.kdb.dbu."""
     cell = _cell_with_two_squares()
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
     rs2 = Stackup.of(si).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
     assert rs2.dbu == cell.layout.kdb.dbu
 
@@ -1124,9 +1124,9 @@ def test_resolve_cross_section_populates_dbu():
     from gdswell.cross_section import CrossSection, LayerSection
 
     xs = CrossSection(
-        layer_sections=(LayerSection(name="core", layer=Pdk.WG, width=0.5, offset=0.0),)
+        layer_sections=(LayerSection(name="core", layer=PDK.WG, width=0.5, offset=0.0),)
     )
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
     rs2 = Stackup.of(si).resolve_cross_section(xs)
     assert rs2.dbu == 0.001
 
@@ -1142,7 +1142,7 @@ def test_plot_cross_section_returns_axes():
     from gdswell.visualization import plot_cross_section
 
     cell = _cell_with_two_squares()
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
     rs2 = Stackup.of(si).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
     ax = plot_cross_section(rs2)
     import matplotlib.axes
@@ -1160,7 +1160,7 @@ def test_plot_cross_section_uses_provided_ax():
     from gdswell.visualization import plot_cross_section
 
     cell = _cell_with_two_squares()
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
     rs2 = Stackup.of(si).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
     fig, my_ax = plt.subplots()
     returned_ax = plot_cross_section(rs2, ax=my_ax)
@@ -1188,8 +1188,8 @@ def test_plot_cross_section_legend_entries_match_kept_names():
     from gdswell.visualization import plot_cross_section
 
     cell = _cell_with_two_squares()
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
-    bot = StackupEntry.uniform("Bot", Pdk.CLAD, -1.0, -0.5)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    bot = StackupEntry.uniform("Bot", PDK.CLAD, -1.0, -0.5)
     rs2 = (si + bot).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
     ax = plot_cross_section(rs2)
     legend = ax.get_legend()
@@ -1210,8 +1210,8 @@ def test_plot_cross_section_apply_cuts_omits_fully_carved_region():
     cell = _cell_with_overlap()
     # A's xy region (the 1x1 WG square) is entirely covered by B (the 2x2 CLAD
     # square). After painter's-algorithm 2D carve, A is fully removed.
-    a = StackupEntry.uniform("A", Pdk.WG, 0.0, 1.0)
-    b = StackupEntry.uniform("B", Pdk.CLAD, 0.0, 1.0)
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 1.0)
+    b = StackupEntry.uniform("B", PDK.CLAD, 0.0, 1.0)
     rs2 = (a + b).resolve_cutline(cell, _cutline((-2.0, 0.5), (2.0, 0.5)))
 
     # apply_cuts=True: A's patches absent from the legend (its final region is empty).
@@ -1241,7 +1241,7 @@ def test_plot_cross_section_color_map_override():
     from gdswell.visualization import plot_cross_section
 
     cell = _cell_with_two_squares()
-    si = StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22)
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
     rs2 = Stackup.of(si).resolve_cutline(cell, _cutline((-1.0, 0.5), (4.0, 0.5)))
     ax = plot_cross_section(rs2, color_map={"Si": "#ff0000"})
     # Find the patch labelled "Si" and check its facecolor.

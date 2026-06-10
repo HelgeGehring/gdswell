@@ -7,7 +7,7 @@ from gdswell.config import clear_cache, config
 from gdswell.cross_section import CellSection, CrossSection, LayerSection, S
 from gdswell.decorator import cell
 from gdswell.instance import Instance
-from gdswell.layer import Layer, LayerMapping
+from gdswell.layer import AllLayers, Layer, LayerMapping
 from gdswell.layout import ACTIVE_LAYOUT, Layout
 from gdswell.port import Port
 from gdswell.routing import (
@@ -43,6 +43,7 @@ __all__ = [
     "CellSection",
     "LayerMapping",
     "Layer",
+    "AllLayers",
     "ResolvedPolygon2D",
     "ResolvedPrism",
     "ResolvedStackup",
