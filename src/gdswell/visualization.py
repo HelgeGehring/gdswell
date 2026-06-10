@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     import matplotlib.colors
     import pyvista as pv
 
-    import gdswell as gw
     from gdswell.stackup import ResolvedStackup, ResolvedStackup2D
 
 
@@ -331,39 +330,6 @@ def _loft_region_pair(
     return meshes
 
 
-def _prism_cut_z_to_region(
-    resolved: "gw.ResolvedStackup",
-    prism_index: int,
-    apply_cuts: bool,
-) -> "dict[float, kdb_.Region]":
-    """Return the prism's z_to_region with cutters subtracted when ``apply_cuts``.
-
-    For each (z, region) of the prism at ``prism_index``, subtract the
-    z-union of every cutter referenced by ``cut_by`` whose z-range covers
-    the current z (inclusive endpoints, matching ``_bbox3d_overlaps``). The
-    z-union approximation conservatively over-cuts slanted cutters, mirroring
-    the same bias the 2D ``cut_by`` machinery already takes.
-    """
-    prism = resolved.prisms[prism_index]
-    out: dict[float, kdb_.Region] = {}
-    for z, region in prism.z_to_region.items():
-        result = region.dup()
-        if apply_cuts:
-            for j in prism.cut_by:
-                cutter = resolved.prisms[j]
-                z_keys = sorted(cutter.z_to_region)
-                if not z_keys:
-                    continue
-                if z < z_keys[0] or z > z_keys[-1]:
-                    continue
-                cutter_union = kdb_.Region()
-                for r in cutter.z_to_region.values():
-                    cutter_union += r
-                result -= cutter_union
-        out[z] = result
-    return out
-
-
 def _regions_equal(a: "kdb_.Region", b: "kdb_.Region") -> bool:
     """True iff ``a`` and ``b`` cover the same xy area.
 
@@ -388,16 +354,10 @@ def _prism_meshes(
     - 2 z-keys with regions that compare set-equal → uniform vertical extrude.
     - Otherwise → loft each adjacent z-pair via ``_loft_region_pair``.
 
-    Topology fallback: when ``_loft_region_pair`` raises ``NotImplementedError``
-    on an adjacent pair (different polygon or point counts — typically caused
-    by cuts that apply at one z but not the other), the dispatcher logs a
-    ``UserWarning`` and falls back to vertical extrusion of the lower region
-    across the pair's z-range. The resulting prism is approximate (the
-    cut at the upper z is lost in this slab), but renders something useful
-    instead of crashing.
+    Topology changes between adjacent z-keys (different polygon or point counts)
+    propagate ``NotImplementedError`` from ``_loft_region_pair`` — the caller is
+    expected to split the entry into smaller z-ranges with stable topology.
     """
-    import warnings
-
     z_keys = sorted(z for z, r in z_to_region.items() if not r.is_empty())
     if len(z_keys) < 2:
         return []
@@ -407,19 +367,9 @@ def _prism_meshes(
 
     meshes: list = []
     for z_lo, z_hi in zip(z_keys, z_keys[1:]):
-        try:
-            meshes.extend(
-                _loft_region_pair(z_to_region[z_lo], z_to_region[z_hi], z_lo, z_hi, dbu, entry_name)
-            )
-        except NotImplementedError as err:
-            warnings.warn(
-                f"Entry {entry_name!r}: post-cut topology differs between "
-                f"z={z_lo} and z={z_hi} ({err}); falling back to vertical "
-                f"extrusion of the z={z_lo} region across [{z_lo}, {z_hi}].",
-                UserWarning,
-                stacklevel=2,
-            )
-            meshes.extend(_extrude_region_uniform(z_to_region[z_lo], z_lo, z_hi, dbu))
+        meshes.extend(
+            _loft_region_pair(z_to_region[z_lo], z_to_region[z_hi], z_lo, z_hi, dbu, entry_name)
+        )
     return meshes
 
 
@@ -427,7 +377,6 @@ def plot_stackup_3d(
     resolved: "ResolvedStackup",
     *,
     plotter: "pv.Plotter | None" = None,
-    apply_cuts: bool = True,
     color_map: "dict[str, object] | None" = None,
     opacity: float = 0.3,
     opacity_map: "dict[str, float] | None" = None,
@@ -437,13 +386,19 @@ def plot_stackup_3d(
 ) -> "pv.Plotter":
     """Render a ``ResolvedStackup`` in 3D as a configured ``pv.Plotter``.
 
-    Mirrors ``plot_cross_section``: cuts are applied by default (overlapping
-    later prisms subtract from earlier ones, per painter's algorithm), the
-    color palette matches between 2D and 3D when no ``color_map`` is given,
-    and ``keep=False`` cutters participate in cut math but never appear as
-    actors. The default ``opacity=0.3`` keeps bulk media (substrate, BOX,
-    claddings) translucent so features inside them stay visible; use
-    ``opacity_map`` to make specific prisms opaque.
+    This is a **raw-prism** preview: each kept entry is lofted from its own
+    ``z_to_region`` and added to the plotter without applying ``cut_by``
+    subtractions. Overlapping prisms render as overlapping translucent solids;
+    the default ``opacity=0.3`` keeps bulk media (substrate, BOX, claddings)
+    see-through so features inside them stay visible, and ``opacity_map``
+    is the escape hatch for making specific prisms opaque.
+
+    Cuts are intentionally left to the downstream 3D backend (e.g. meshwell):
+    robust 3D booleans require exact-arithmetic CSG that VTK does not provide,
+    and the rendered preview here is meant for sanity-checking the painter's
+    order, layer footprints, and z-extents — not for producing simulation
+    geometry. ``keep=False`` cutters still skip rendering (their ``cut_by``
+    references are honoured by the backend that consumes ``ResolvedStackup``).
 
     The returned plotter has depth peeling enabled (so translucent overlaps
     composite correctly), an axes triad, a white background, and a legend
@@ -468,13 +423,13 @@ def plot_stackup_3d(
     plotter.show_axes()  # ty: ignore[missing-argument]
 
     legend_seen: set[str] = set()
-    for i, prism in enumerate(resolved.prisms):
+    for prism in resolved.prisms:
         if not prism.keep:
             continue
-        cut_z_to_region = _prism_cut_z_to_region(resolved, i, apply_cuts)
-        meshes = _prism_meshes(cut_z_to_region, resolved.dbu, prism.name)
+        meshes = _prism_meshes(prism.z_to_region, resolved.dbu, prism.name)
         if not meshes:
             continue
+
         fc = _palette_color_for_name(prism.name, color_map, name_to_color)
         op = opacity_map.get(prism.name, opacity)
         for mesh in meshes:

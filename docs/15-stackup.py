@@ -89,7 +89,7 @@ si_rib = gw.StackupEntry("Si_rib", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
 
 # TiN heater, a via column, and a metal-1 pad.
 heater = gw.StackupEntry.uniform("Heater", PDK.HEATER, 1.5, 1.6)
-via1 = gw.StackupEntry.uniform("Via1", PDK.VIA1, 1.55, 2.5)
+via1 = gw.StackupEntry("Via1", {1.55: PDK.VIA1, 2.5: PDK.VIA1.size(0.2)})
 metal1 = gw.StackupEntry.uniform("Metal1", PDK.METAL1, 2.5, 3.5)
 
 # %% [markdown]
@@ -178,12 +178,16 @@ for p in resolved.prisms:
 # %% [markdown]
 # ### Rendering the 3D stack with PyVista
 #
-# `gw.plot_stackup_3d(resolved)` builds one `pv.PolyData` per kept prism,
-# applies the painter's-algorithm cuts (the same ones `plot_cross_section`
-# honors in 2D), and returns a configured `pv.Plotter`. The default
-# `opacity=0.3` keeps bulk media (substrate, BOX, claddings) see-through so
-# the rib, slab, heater, via, and metal-1 pad stay visible. `opacity_map`
-# is the escape hatch for making specific prisms opaque.
+# `gw.plot_stackup_3d(resolved)` builds one `pv.PolyData` per kept prism
+# and returns a configured `pv.Plotter`. The viewer renders **raw** prism
+# bodies — it does not apply `cut_by` subtractions, because robust 3D
+# booleans on coplanar slab faces require exact-arithmetic CSG that VTK
+# does not provide. Painter's-algorithm cuts are the downstream backend's
+# job (e.g. meshwell); use this viewer for sanity-checking painter's order,
+# layer footprints, and z-extents. The default `opacity=0.3` keeps bulk
+# media (substrate, BOX, claddings) see-through so the rib, slab, heater,
+# via, and metal-1 pad stay visible through them. `opacity_map` is the
+# escape hatch for making specific prisms opaque.
 
 # %%
 import pyvista as pv  # noqa: E402

@@ -218,33 +218,6 @@ def _build_two_entry_resolved(dbu: float = 0.001):
     return stack.resolve(cell)
 
 
-def test_prism_cut_z_to_region_no_cuts_returns_raw():
-    """apply_cuts=False yields exactly the prism's own z_to_region."""
-    from gdswell.visualization import _prism_cut_z_to_region
-
-    resolved = _build_two_entry_resolved()
-    cut = _prism_cut_z_to_region(resolved, prism_index=0, apply_cuts=False)
-    assert set(cut.keys()) == set(resolved.prisms[0].z_to_region.keys())
-    for z, region in cut.items():
-        assert region.bbox() == resolved.prisms[0].z_to_region[z].bbox()
-
-
-def test_prism_cut_z_to_region_apply_cuts_subtracts_overlap():
-    """With apply_cuts=True, the cutter's region is subtracted at every z
-    within its z-range."""
-    from gdswell.visualization import _prism_cut_z_to_region
-
-    resolved = _build_two_entry_resolved()
-    cut = _prism_cut_z_to_region(resolved, prism_index=0, apply_cuts=True)
-    # Bottom-left 0.5 × 0.5 carved away from a 1 × 1 → remaining region has
-    # 75% of original area (in dbu² units).
-    original_area = sum(r.area() for r in resolved.prisms[0].z_to_region.values()) / len(
-        resolved.prisms[0].z_to_region
-    )
-    cut_area = sum(r.area() for r in cut.values()) / len(cut)
-    assert cut_area == 0.75 * original_area
-
-
 def test_prism_meshes_uniform_returns_extruded():
     """A 2-key region dict with equal regions → uniform extrude path."""
     import klayout.db as kdb
@@ -363,11 +336,10 @@ def test_plot_stackup_3d_keep_false_is_omitted():
         plotter.close()
 
 
-def test_plot_stackup_3d_apply_cuts_false_keeps_overlapping():
-    """A keep=True full-coverage cutter on top of Si:
-    - apply_cuts=True: Si fully carved → fewer actors total.
-    - apply_cuts=False: Si NOT carved → more actors visible.
-    """
+def test_plot_stackup_3d_renders_overlapping_keep_true_prisms_as_raw():
+    """Two keep=True prisms with overlapping 3D bboxes both render as raw
+    (translucent) solids — the viewer does not apply cuts; ``cut_by`` is the
+    downstream 3D backend's responsibility."""
     from enum import Enum
 
     import gdswell as gw
@@ -379,22 +351,19 @@ def test_plot_stackup_3d_apply_cuts_false_keeps_overlapping():
     layout = gw.Layout()
     cell = gw.Cell(layout=layout)
     cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.WG)
-    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.MASK)  # full coverage
+    cell.add_polygon([(0, 0), (1, 0), (1, 1), (0, 1)], Pdk.MASK)
     stack = gw.StackupEntry.uniform("Si", Pdk.WG, 0.0, 0.22) + gw.StackupEntry.uniform(
         "FullCutter", Pdk.MASK, 0.0, 0.22
     )
     resolved = stack.resolve(cell)
 
-    plotter_cut = gw.plot_stackup_3d(resolved, apply_cuts=True)
-    plotter_raw = gw.plot_stackup_3d(resolved, apply_cuts=False)
+    plotter = gw.plot_stackup_3d(resolved)
     try:
-        cut_actor_count = len(plotter_cut.renderer.actors)
-        raw_actor_count = len(plotter_raw.renderer.actors)
-        # Raw mode shows both; cut mode shows fewer.
-        assert raw_actor_count > cut_actor_count
+        names = {str(name) for name in plotter.renderer.actors.keys()}
+        assert any("Si" in n for n in names)
+        assert any("FullCutter" in n for n in names)
     finally:
-        plotter_cut.close()
-        plotter_raw.close()
+        plotter.close()
 
 
 def test_plot_stackup_3d_opacity_map_precedence():
@@ -498,16 +467,13 @@ def test_plot_stackup_3d_is_in_top_level_all():
     assert "plot_stackup_3d" in gw.__all__
 
 
-def test_prism_meshes_topology_change_falls_back_to_extrusion():
+def test_prism_meshes_topology_change_raises():
     """When adjacent z-key regions have mismatched topology (e.g. different
-    polygon counts from disjoint cuts at different z), the dispatcher falls
-    back to vertical extrusion of the lower region instead of crashing.
-
-    Emits a UserWarning so the approximation is visible.
-    """
-    import warnings
-
+    polygon counts from disjoint cuts at different z), the dispatcher raises
+    NotImplementedError naming the entry — the caller is expected to split the
+    entry into smaller z-ranges with stable topology."""
     import klayout.db as kdb
+    import pytest
 
     from gdswell.visualization import _prism_meshes
 
@@ -528,10 +494,5 @@ def test_prism_meshes_topology_change_falls_back_to_extrusion():
         )
     )
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        meshes = _prism_meshes({0.0: bottom, 0.22: top}, dbu=dbu, entry_name="Approx")
-    # At least one mesh produced (the fallback extruded the bottom region).
-    assert len(meshes) >= 1
-    # The user got a warning about the fallback.
-    assert any("Approx" in str(w.message) for w in caught)
+    with pytest.raises(NotImplementedError, match="Approx"):
+        _prism_meshes({0.0: bottom, 0.22: top}, dbu=dbu, entry_name="Approx")
