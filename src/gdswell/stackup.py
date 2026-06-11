@@ -42,14 +42,10 @@ class StackupEntry:
 
     def __add__(self, other: StackupEntry | Stackup) -> Stackup:
         rhs = Stackup._coerce_items(other, keep=True)
-        if rhs is NotImplemented:
-            return NotImplemented
         return Stackup(items=(StackupItem(self, True),) + rhs)
 
     def __sub__(self, other: StackupEntry | Stackup) -> Stackup:
         rhs = Stackup._coerce_items(other, keep=False)
-        if rhs is NotImplemented:
-            return NotImplemented
         return Stackup(items=(StackupItem(self, True),) + rhs)
 
     # --- layer-recipe operations --------------------------------------------
@@ -153,20 +149,18 @@ class Stackup:
             if keep:
                 return other.items
             return tuple(StackupItem(it.entry, False) for it in other.items)
-        return NotImplemented
+        raise TypeError(
+            f"Stackup composition expects a StackupEntry or Stackup, got {type(other).__name__}"
+        )
 
     # --- algebra -------------------------------------------------------------
 
     def __add__(self, other: StackupEntry | Stackup) -> Stackup:
         rhs = Stackup._coerce_items(other, keep=True)
-        if rhs is NotImplemented:
-            return NotImplemented
         return Stackup(items=self.items + rhs)
 
     def __sub__(self, other: StackupEntry | Stackup) -> Stackup:
         rhs = Stackup._coerce_items(other, keep=False)
-        if rhs is NotImplemented:
-            return NotImplemented
         return Stackup(items=self.items + rhs)
 
     def __radd__(self, other: StackupEntry) -> Stackup:
