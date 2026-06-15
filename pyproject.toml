@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "gdswell"
-version = "0.1.2"
+version = "0.0.0"
 description = "Chip design package"
 authors = [{name = "Helge Gehring"}, {name = "Simon Bilodeau"}]
 requires-python = ">=3.13"
