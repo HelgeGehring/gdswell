@@ -48,7 +48,7 @@ jobs:
         run: uv sync --all-extras --dev
  
       - name: Run tests
-        run: ${{ matrix.freethreaded && 'PYTHON_GIL=0 ' || '' }}uv run pytest
+        run: ${{ matrix.freethreaded && 'PYTHON_GIL=0 ' || '' }}xvfb-run uv run pytest
  
   prepare-docs:
     runs-on: ubuntu-latest
