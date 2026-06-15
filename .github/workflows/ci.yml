@@ -111,7 +111,9 @@ jobs:
           pattern: notebook-*
           merge-multiple: true
       - name: Build documentation
-        run: cd docs && uv run myst build --html
+        run: |
+          export BASE_URL="/gdswell"
+          cd docs && uv run myst build --html
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
