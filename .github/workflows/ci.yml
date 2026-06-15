@@ -83,7 +83,7 @@ jobs:
         id: exec
         run: |
           # Convert and execute
-          uv run jupytext "${{ matrix.file }}" --to ipynb --execute --set-kernel python3
+          xvfb-run uv run jupytext "${{ matrix.file }}" --to ipynb --execute --set-kernel python3
           # Output the ipynb path for the upload step
           IPYNB=$(echo "${{ matrix.file }}" | sed 's/\.py$/\.ipynb/')
           echo "ipynb=$IPYNB" >> $GITHUB_OUTPUT
