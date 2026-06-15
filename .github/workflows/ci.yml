@@ -111,11 +111,11 @@ jobs:
           pattern: notebook-*
           merge-multiple: true
       - name: Build documentation
-        run: uv run myst build
+        run: uv run myst build --html
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/_build/site
+          path: docs/_build/html
 
   deploy:
     needs: build-site
