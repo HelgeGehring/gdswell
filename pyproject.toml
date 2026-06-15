@@ -6,6 +6,7 @@ build-backend = "flit_core.buildapi"
 name = "gdswell"
 version = "0.0.0"
 description = "Chip design package"
+readme = "README.md"
 authors = [{name = "Helge Gehring"}, {name = "Simon Bilodeau"}]
 requires-python = ">=3.13"
 dependencies = [
@@ -14,6 +15,11 @@ dependencies = [
     "sympy>=1.14.0",
 ]
 license = { file = "LICENSE" }
+
+[project.urls]
+Homepage = "https://github.com/HelgeGehring/gdswell"
+Issues = "https://github.com/HelgeGehring/gdswell/issues"
+Documentation = "https://helgegehring.github.io/gdswell"
 
 [project.optional-dependencies]
 dev = [
