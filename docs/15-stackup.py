@@ -317,8 +317,8 @@ plt.show()
 # Later entries cut earlier ones where their 3D (or 2D) bboxes overlap.
 # `plot_cross_section` applies these cuts by default (`apply_cuts=True`) so
 # you see each prism's final, carved patch. Compare with `apply_cuts=False`,
-# which renders the raw per-entry regions before any subtraction — useful
-# for debugging painter's order.
+# which renders the raw per-entry regions before any subtraction. This is useful
+# to debug painter's order.
 
 # %%
 fig, ax = plt.subplots(figsize=(8, 4.5))
