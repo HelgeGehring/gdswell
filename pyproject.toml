@@ -19,6 +19,10 @@ license = { file = "LICENSE" }
 dev = [
     "pytest",
 ]
+docs = [
+    "matplotlib",
+    "pyvista",
+]
 
 [dependency-groups]
 dev = [
@@ -29,7 +33,6 @@ dev = [
     "jupyter",
     "mystmd",
     "rust-just",
-    "matplotlib",
 ]
 
 [tool.ruff]

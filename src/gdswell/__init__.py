@@ -7,7 +7,7 @@ from gdswell.config import clear_cache, config
 from gdswell.cross_section import CellSection, CrossSection, LayerSection, S
 from gdswell.decorator import cell
 from gdswell.instance import Instance
-from gdswell.layer import Layer, LayerMapping
+from gdswell.layer import AllLayers, Layer, LayerMapping
 from gdswell.layout import ACTIVE_LAYOUT, Layout
 from gdswell.port import Port
 from gdswell.routing import (
@@ -18,7 +18,16 @@ from gdswell.routing import (
     route_u,
     route_z,
 )
+from gdswell.stackup import (
+    ResolvedPolygon2D,
+    ResolvedPrism,
+    ResolvedStackup,
+    ResolvedStackup2D,
+    Stackup,
+    StackupEntry,
+)
 from gdswell.stats import get_stats, print_stats, reset_stats
+from gdswell.visualization import plot_cross_section, plot_stackup_3d
 
 __all__ = [
     "config",
@@ -34,6 +43,13 @@ __all__ = [
     "CellSection",
     "LayerMapping",
     "Layer",
+    "AllLayers",
+    "ResolvedPolygon2D",
+    "ResolvedPrism",
+    "ResolvedStackup",
+    "ResolvedStackup2D",
+    "Stackup",
+    "StackupEntry",
     "S",
     "route_step_by_step",
     "route_manhattan",
@@ -42,6 +58,8 @@ __all__ = [
     "route_u",
     "chain_components",
     "get_stats",
+    "plot_cross_section",
+    "plot_stackup_3d",
     "print_stats",
     "reset_stats",
 ]
