@@ -93,13 +93,13 @@ via1 = gw.StackupEntry("Via1", {1.55: PDK.VIA1, 2.5: PDK.VIA1.size(0.2)})
 metal1 = gw.StackupEntry.uniform("Metal1", PDK.METAL1, 2.5, 3.5)
 
 # %% [markdown]
-# ## Composing with `+` and `-`
+# ## Composing StackupEntries into a Stackup with `+` and `-`
 #
 # `Stackup` composition is strict painter's order (left-to-right). `+` appends
-# an entry with `keep=True`; `-` appends it with `keep=False` — the entry's
-# geometry still participates in later `cut_by` computations, but it can tell downstream
-# backends not to emit it as an output volume. Use parentheses for explicit
-# grouping when mixing the two.
+# an entry with `keep=True`. `-` appends it with `keep=False`: this is used as
+# a optional shortcut to
+# indicate that an entity should participate in later `cut_by` computations, while not being
+# emitted as an output volume. Use parentheses for explicit grouping when mixing the two.
 
 # %%
 stack = substrate + box + lower_clad + upper_clad + si_slab + si_rib + heater + via1 + metal1
@@ -116,43 +116,108 @@ stack = substrate + box + lower_clad + upper_clad + si_slab + si_rib + heater + 
 print(stack)
 
 # %% [markdown]
+# ## Stack perturbations
+#
+# Both `StackupEntry` and `Stackup` are immutable: every perturbation returns a
+# *new* object and leaves the original untouched. Perturbations come in two
+# flavours — one acts on each entry's **xy layer recipes**, the other on its
+# **z-keys** — and both compose cleanly through `+` / `-`, so you can perturb a
+# sub-stackup and drop it straight into a larger composition.
+
+# %% [markdown]
+# ### Transforming layers (xy)
+#
+# The `map_layers(fn)` family rewrites the *recipe* side of every `z_to_layer`
+# entry while leaving the z-keys fixed. `size`, `transformed`, `round_corners`,
+# `bbox`, and the boolean selectors (`interacting`, `inside`, `outside`,
+# `overlapping`) are exactly the [Smart Layer API](./12-smart_layers.py)
+# operations from notebook 12, lifted onto a stackup: each one applies the
+# corresponding `LayerBase` recipe transform to every entry. Calling one on a
+# `Stackup` applies it to every entry in the stack.
+#
+# Here we grow both silicon layers by 100 nm per side — the recipes become
+# `LayerSize(...)` wrappers while the z-keys stay put:
+
+# %%
+silicon = si_slab + si_rib
+print(silicon.size(0.1))
+
+# %% [markdown]
+# ### Transforming z-keys
+#
+# `shift_z(dz)` translates every z-key; `scale_z(factor, origin=0.0)` scales
+# them about a single shared absolute `origin`
+# (`new_z = origin + (z - origin) * factor`). A negative `factor` mirrors the
+# stack in z. On a `Stackup` both apply uniformly to
+# all entries, so a sub-stackup moves or stretches as one rigid body.
+#
+# The motivating use is floating one sub-stackup in z relative to another. Here
+# the silicon device is lifted 200 nm above the lower cladding — the `Si_slab` /
+# `Si_rib` z-rows shift up while the bulk media stay put:
+
+# %%
+base = substrate + box + lower_clad
+device = si_slab + si_rib
+print(base + device.shift_z(0.2))
+
+# %% [markdown]
+# `scale_z` stretches thickness about the origin. Doubling the device about
+# `z = 0` sends the slab top from 70 nm to 140 nm and the rib top from 220 nm
+# to 440 nm:
+
+# %%
+print(device.scale_z(2.0))
+
+
+# %% [markdown]
 # ## Drawing the device
 #
-# To resolve the stackup we need a cell with polygons on each layer. The
-# device is a 20 µm-long rib waveguide with a TiN heater strip running along
+# Th stackup itself is only a recipe. To resolve it, we need a cell. Here, we make a
+# device with a 20 µm-long rib waveguide with a TiN heater strip running along
 # it; both ends of the heater fan out to a metal-1 pad south of the
 # waveguide, contacted by a small via column.
 
 # %%
-layout = gw.Layout()
-cell = gw.Cell(layout=layout)
 
 L = 20.0  # propagation length, µm
 W = 8.0  # transverse half-extent, µm
 
-# No explicit device-extent polygon needed — the bulk-medium entries use
-# `AllLayers().bbox()`, which auto-expands to enclose the geometry below.
 
-# Si rib (500 nm) and surrounding slab (6 µm).
-cell.add_polygon([(0.0, -0.25), (L, -0.25), (L, 0.25), (0.0, 0.25)], PDK.WG)
-cell.add_polygon([(0.0, -3.0), (L, -3.0), (L, 3.0), (0.0, 3.0)], PDK.SLAB)
+@gw.cell
+def device_cell(L=L, W=W) -> gw.Cell:
+    """Test device.
 
-# TiN heater: a 2 µm strip over the rib plus a 6 × 3 µm contact pad south of it.
-cell.add_polygon([(0.0, -1.0), (L, -1.0), (L, 1.0), (0.0, 1.0)], PDK.HEATER)
-cell.add_polygon(
-    [(L / 2 - 3, -5.5), (L / 2 + 3, -5.5), (L / 2 + 3, -2.5), (L / 2 - 3, -2.5)],
-    PDK.HEATER,
-)
+    Arguments:
+        L (float): propagation length, µm
+        W (float): transverse half-extent, µm
+    """
+    cell = gw.Cell()
 
-# Via1 (2 × 0.5 µm column) and a METAL1 pad sized like the heater pad.
-cell.add_polygon(
-    [(L / 2 - 1, -5.0), (L / 2 + 1, -5.0), (L / 2 + 1, -4.5), (L / 2 - 1, -4.5)],
-    PDK.VIA1,
-)
-cell.add_polygon(
-    [(L / 2 - 3, -5.5), (L / 2 + 3, -5.5), (L / 2 + 3, -2.5), (L / 2 - 3, -2.5)],
-    PDK.METAL1,
-)
+    # Si rib (500 nm) and surrounding slab (6 µm).
+    cell.add_polygon([(0.0, -0.25), (L, -0.25), (L, 0.25), (0.0, 0.25)], PDK.WG)
+    cell.add_polygon([(0.0, -3.0), (L, -3.0), (L, 3.0), (0.0, 3.0)], PDK.SLAB)
+
+    # TiN heater: a 2 µm strip over the rib plus a 6 × 3 µm contact pad south of it.
+    cell.add_polygon([(0.0, -1.0), (L, -1.0), (L, 1.0), (0.0, 1.0)], PDK.HEATER)
+    cell.add_polygon(
+        [(L / 2 - 3, -5.5), (L / 2 + 3, -5.5), (L / 2 + 3, -2.5), (L / 2 - 3, -2.5)],
+        PDK.HEATER,
+    )
+
+    # Via1 (2 × 0.5 µm column) and a METAL1 pad sized like the heater pad.
+    cell.add_polygon(
+        [(L / 2 - 1, -5.0), (L / 2 + 1, -5.0), (L / 2 + 1, -4.5), (L / 2 - 1, -4.5)],
+        PDK.VIA1,
+    )
+    cell.add_polygon(
+        [(L / 2 - 3, -5.5), (L / 2 + 3, -5.5), (L / 2 + 3, -2.5), (L / 2 - 3, -2.5)],
+        PDK.METAL1,
+    )
+
+    return cell
+
+
+cell = device_cell(L=L, W=W)
 
 # %% [markdown]
 # ## Resolving in 3D
@@ -262,39 +327,11 @@ ax.set_title("Same stackup, apply_cuts=False (raw per-entry regions overlap)")
 plt.tight_layout()
 plt.show()
 
-# %% [markdown]
-# ## The `-` operator: `keep=False` cutters
-#
-# `-` adds an entry as a *cutter*: it participates in `cut_by` like any other
-# slot, but downstream backends don't emit it as an output volume. For physical simulations,
-# this provides a concise way to "remove" geometry domains, while being able to tag their surfaces.
-
-# %%
-etch = gw.StackupEntry.uniform("Etch", PDK.SLAB.size(0.5), 1.5, 2.5)
-carved_stack = (
-    substrate
-    + box
-    + lower_clad
-    + upper_clad
-    + si_slab
-    + si_rib
-    - etch  # cutter: removes oxide where the slab (grown by 500 nm) is drawn
-)
-print(carved_stack)
-
-# %%
-resolved_carved = carved_stack.resolve_cutline(cell, cutline)
-
-fig, ax = plt.subplots(figsize=(8, 4.5))
-gw.plot_cross_section(resolved_carved, ax=ax)
-ax.set_title("Etched oxide opening above the slab (keep=False cutter)")
-plt.tight_layout()
-plt.show()
 
 # %% [markdown]
 # ## Cutting in 2D — `resolve_cross_section`
 #
-# For waveguide work, you usually already have a `CrossSection`. The
+# In many layouts, you usually already work with `CrossSection`s. The
 # convenience `Stackup.resolve_cross_section(xs, s=0.0)` evaluates the
 # `CrossSection` at `s`, builds a synthetic straight whose xy layout matches
 # the evaluated profile, and slices it with a perpendicular midspan cutline.

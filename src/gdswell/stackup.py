@@ -83,6 +83,28 @@ class StackupEntry:
     def overlapping(self, other: LayerBase, min_count: int = 1) -> StackupEntry:
         return self.map_layers(lambda L: L.overlapping(other, min_count))
 
+    # --- z-key operations ----------------------------------------------------
+
+    def _map_z(self, fn: Callable[[float], float]) -> StackupEntry:
+        """Return a new entry with ``fn`` applied to every z-key (recipes kept).
+
+        Keys are rounded to 15 decimal places to avoid IEEE 754 drift when
+        chaining multiple transforms (e.g. shift_z(d).shift_z(-d) == original).
+        """
+        return replace(self, z_to_layer={round(fn(z), 15): L for z, L in self.z_to_layer.items()})
+
+    def shift_z(self, dz: float) -> StackupEntry:
+        """Translate every z-key by ``dz``."""
+        return self._map_z(lambda z: z + dz)
+
+    def scale_z(self, factor: float, origin: float = 0.0) -> StackupEntry:
+        """Scale every z-key about ``origin`` by ``factor`` (negative mirrors)."""
+        if factor == 0.0:
+            raise ValueError(
+                f"scale_z factor must be non-zero (would collapse all z-keys onto origin={origin})"
+            )
+        return self._map_z(lambda z: origin + (z - origin) * factor)
+
     # --- equality / hashing ---------------------------------------------------
 
     def _sorted_items(self) -> tuple[tuple[float, LayerBase], ...]:
@@ -211,6 +233,24 @@ class Stackup:
 
     def overlapping(self, other: LayerBase, min_count: int = 1) -> Stackup:
         return self.map_layers(lambda L: L.overlapping(other, min_count))
+
+    # --- z-key operations ----------------------------------------------------
+
+    def _map_z(self, fn: Callable[[float], float]) -> Stackup:
+        """Return a new stackup with ``fn`` applied to every item's z-keys."""
+        return Stackup(items=tuple(StackupItem(it.entry._map_z(fn), it.keep) for it in self.items))
+
+    def shift_z(self, dz: float) -> Stackup:
+        """Translate every item's z-keys by ``dz``."""
+        return self._map_z(lambda z: z + dz)
+
+    def scale_z(self, factor: float, origin: float = 0.0) -> Stackup:
+        """Scale every item's z-keys about a shared ``origin`` (negative mirrors)."""
+        if factor == 0.0:
+            raise ValueError(
+                f"scale_z factor must be non-zero (would collapse all z-keys onto origin={origin})"
+            )
+        return self._map_z(lambda z: origin + (z - origin) * factor)
 
     # --- equality / hashing --------------------------------------------------
 

@@ -1250,3 +1250,101 @@ def test_plot_cross_section_color_map_override():
     assert patches_for_si, "Si patch not rendered"
     # Compare RGB (ignore alpha, which the plotter may set independently).
     assert patches_for_si[0].get_facecolor()[:3] == target[:3]
+
+
+# ---- z-key operations -------------------------------------------------------
+
+
+def test_entry_shift_z_moves_all_keys_preserving_recipes():
+    e = StackupEntry("Si", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
+    shifted = e.shift_z(1.5)
+    assert isinstance(shifted, StackupEntry)
+    assert shifted.name == "Si"
+    assert set(shifted.z_to_layer.keys()) == {1.5, 1.72}
+    assert shifted.z_to_layer[1.5] == PDK.WG
+    assert shifted.z_to_layer[1.72] == PDK.WG.size(-0.05)
+    assert set(e.z_to_layer.keys()) == {0.0, 0.22}
+
+
+def test_entry_shift_z_round_trip():
+    e = StackupEntry("Si", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
+    assert e.shift_z(3.0).shift_z(-3.0) == e
+
+
+def test_entry_scale_z_about_default_origin():
+    e = StackupEntry("Si", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
+    scaled = e.scale_z(2.0)
+    assert set(scaled.z_to_layer.keys()) == {0.0, 0.44}
+    assert scaled.z_to_layer[0.0] == PDK.WG
+    assert scaled.z_to_layer[0.44] == PDK.WG.size(-0.05)
+
+
+def test_entry_scale_z_about_nonzero_origin():
+    e = StackupEntry("Si", {1.0: PDK.WG, 2.0: PDK.WG.size(-0.05)})
+    scaled = e.scale_z(2.0, origin=1.0)
+    assert set(scaled.z_to_layer.keys()) == {1.0, 3.0}
+
+
+def test_entry_scale_z_negative_factor_mirrors():
+    e = StackupEntry("Si", {0.0: PDK.WG, 1.0: PDK.WG.size(-0.05)})
+    scaled = e.scale_z(-1.0)
+    assert set(scaled.z_to_layer.keys()) == {0.0, -1.0}
+
+
+def test_entry_scale_z_zero_factor_raises():
+    e = StackupEntry("Si", {0.0: PDK.WG, 1.0: PDK.WG.size(-0.05)})
+    with pytest.raises(ValueError, match="scale_z factor must be non-zero"):
+        e.scale_z(0.0)
+
+
+def test_entry_scale_z_round_trip():
+    e = StackupEntry("Si", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
+    assert e.scale_z(2.0).scale_z(0.5) == e
+
+
+# ---- Stackup z-key operations -----------------------------------------------
+
+
+def test_stackup_shift_z_moves_every_item_and_keeps_flags():
+    stk = _e("A", 0.0, 1.0) - _e("B", 0.0, 0.5)  # B is keep=False
+    shifted = stk.shift_z(2.0)
+    assert isinstance(shifted, Stackup)
+    assert [it.entry.name for it in shifted.items] == ["A", "B"]
+    assert [it.keep for it in shifted.items] == [True, False]
+    assert set(shifted.items[0].entry.z_to_layer.keys()) == {2.0, 3.0}
+    assert set(shifted.items[1].entry.z_to_layer.keys()) == {2.0, 2.5}
+
+
+def test_stackup_shift_z_composes_through_addition():
+    base = _e("base", 0.0, 1.0)
+    soi = _e("soi", 0.0, 0.2)
+    full = base + Stackup.of(soi).shift_z(2.0)
+    assert [it.entry.name for it in full.items] == ["base", "soi"]
+    assert set(full.items[1].entry.z_to_layer.keys()) == {2.0, 2.2}
+
+
+def test_stackup_scale_z_uniform_shared_origin():
+    stk = _e("A", 0.0, 1.0) + _e("B", 1.0, 2.0)
+    scaled = stk.scale_z(2.0)  # origin 0.0, single shared pivot
+    assert set(scaled.items[0].entry.z_to_layer.keys()) == {0.0, 2.0}
+    assert set(scaled.items[1].entry.z_to_layer.keys()) == {2.0, 4.0}
+
+
+def test_stackup_scale_z_zero_factor_raises():
+    stk = _e("A", 0.0, 1.0) + _e("B", 1.0, 2.0)
+    with pytest.raises(ValueError, match="scale_z factor must be non-zero"):
+        stk.scale_z(0.0)
+
+
+def test_stackup_scale_z_shared_nonzero_origin_across_items():
+    # A single shared absolute origin applies to every item (not a per-entry pivot).
+    stk = _e("A", 0.0, 1.0) + _e("B", 1.0, 2.0)
+    scaled = stk.scale_z(2.0, origin=1.0)  # new_z = 1.0 + (z - 1.0) * 2.0
+    assert set(scaled.items[0].entry.z_to_layer.keys()) == {-1.0, 1.0}
+    assert set(scaled.items[1].entry.z_to_layer.keys()) == {1.0, 3.0}
+
+
+def test_stackup_scale_z_empty_zero_factor_raises():
+    # Spec: the factor==0 guard must fire even when there are no items to reach.
+    with pytest.raises(ValueError, match="scale_z factor must be non-zero"):
+        Stackup().scale_z(0.0)
