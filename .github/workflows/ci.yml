@@ -111,7 +111,7 @@ jobs:
           pattern: notebook-*
           merge-multiple: true
       - name: Build documentation
-        run: uv run myst build --html
+        run: cd docs && uv run myst build --html
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
