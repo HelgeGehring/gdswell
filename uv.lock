@@ -490,7 +490,7 @@ wheels = [
 
 [[package]]
 name = "gdswell"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "klayout" },
@@ -522,7 +522,7 @@ dev = [
 requires-dist = [
     { name = "klayout", specifier = ">=0.30.7" },
     { name = "matplotlib", marker = "extra == 'docs'" },
-    { name = "numpy", specifier = ">=2.4.3" },
+    { name = "numpy", specifier = ">=2.1.0" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pyvista", marker = "extra == 'docs'" },
     { name = "sympy", specifier = ">=1.14.0" },
