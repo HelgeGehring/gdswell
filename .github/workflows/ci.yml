@@ -110,6 +110,7 @@ jobs:
         with:
           pattern: notebook-*
           merge-multiple: true
+          path: docs/
       - name: Build documentation
         run: |
           export BASE_URL="/gdswell"
