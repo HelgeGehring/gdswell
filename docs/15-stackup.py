@@ -331,7 +331,7 @@ plt.show()
 # %% [markdown]
 # ## Cutting in 2D — `resolve_cross_section`
 #
-# In many layouts, you usually already work with `CrossSection`s. The
+# In many layouts, you usually already work with a `CrossSection`. The
 # convenience `Stackup.resolve_cross_section(xs, s=0.0)` evaluates the
 # `CrossSection` at `s`, builds a synthetic straight whose xy layout matches
 # the evaluated profile, and slices it with a perpendicular midspan cutline.
