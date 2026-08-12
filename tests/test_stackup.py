@@ -1903,3 +1903,60 @@ def test_apply_cuts_2d_commutes_with_1d_slice_at_generic_z():
         via_2d = rs2.apply_cuts().slice_at_z(z)
         via_1d = rs2.slice_at_z(z).apply_cuts()
         assert [ln.intervals for ln in via_2d.lines] == [ln.intervals for ln in via_1d.lines]
+
+
+# ---- 1D slices: Stackup.resolve_xyline / resolve_zline --------------------
+
+
+def test_resolve_xyline_equals_manual_slice():
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    clad = StackupEntry.uniform("Clad", PDK.CLAD, 0.0, 0.5)
+    stack = si + clad
+    cutline = ((-1.0, 0.5), (4.0, 0.5))
+    direct = stack.resolve_xyline(cell, cutline, z=0.1)
+    manual = stack.resolve_cutline(cell, cutline).slice_at_z(0.1)
+    assert direct == manual  # value equality via geometric edge comparison
+    assert direct.lines[0].intervals == ((1000, 2000),)
+
+
+def test_resolve_zline_point_inside_entry():
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    rs1 = Stackup.of(si).resolve_zline(cell, (0.5, 0.5))
+    assert rs1.axis == "z"
+    assert rs1.lines[0].intervals == ((0, 220),)
+
+
+def test_resolve_zline_point_outside_entry_empty():
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    rs1 = Stackup.of(si).resolve_zline(cell, (10.0, 10.0))
+    assert rs1.lines[0].intervals == ()
+
+
+def test_resolve_zline_direction_invariant_for_vertical_sidewalls():
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    stack = Stackup.of(si)
+    along_x = stack.resolve_zline(cell, (0.5, 0.5), direction=(1.0, 0.0))
+    along_y = stack.resolve_zline(cell, (0.5, 0.5), direction=(0.0, 1.0))
+    assert [ln.intervals for ln in along_x.lines] == [ln.intervals for ln in along_y.lines]
+
+
+def test_resolve_zline_zero_direction_raises():
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    with pytest.raises(ValueError, match="direction"):
+        Stackup.of(si).resolve_zline(cell, (0.5, 0.5), direction=(0.0, 0.0))
+
+
+def test_resolve_zline_apply_cuts_material_column():
+    """End-to-end: a clad-over-core column at a point, reduced to the final
+    material stack (core cuts the clad interval)."""
+    cell = _cell_with_two_squares()
+    clad = StackupEntry.uniform("Clad", PDK.WG, 0.0, 1.0)
+    core = StackupEntry.uniform("Core", PDK.WG, 0.0, 0.22)
+    cut = (clad + core).resolve_zline(cell, (0.5, 0.5)).apply_cuts()
+    assert cut.lines[0].intervals == ((220, 1000),)  # Clad minus Core
+    assert cut.lines[1].intervals == ((0, 220),)  # Core wins below

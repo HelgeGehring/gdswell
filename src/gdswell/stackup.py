@@ -531,6 +531,50 @@ class Stackup:
         cell, cutline = _build_synthetic_straight(xs_static)
         return self.resolve_cutline(cell, cutline)
 
+    def resolve_xyline(
+        self,
+        cell: "gw.Cell",
+        cutline: tuple[tuple[float, float], tuple[float, float]],
+        z: float,
+    ) -> ResolvedStackup1D:
+        """1D slice along an xy cutline at height ``z`` (µm): the s-intervals
+        where each entry's material is present. Equivalent to
+        ``resolve_cutline(cell, cutline).slice_at_z(z)`` — resolve the 2D
+        cross-section yourself if you need several z-heights from one line.
+        """
+        return self.resolve_cutline(cell, cutline).slice_at_z(z)
+
+    def resolve_zline(
+        self,
+        cell: "gw.Cell",
+        point: tuple[float, float],
+        direction: tuple[float, float] = (1.0, 0.0),
+    ) -> ResolvedStackup1D:
+        """1D slice in z at an xy ``point`` (µm): the z-intervals occupied by
+        each entry at that location.
+
+        Builds a cutline through ``point`` along ``direction`` long enough to
+        span the cell bbox (+1 µm margin), resolves the 2D cross-section, and
+        slices it at the point's arclength. ``direction`` only matters for
+        entries with slanted sidewalls: their intermediate-z bounds come from
+        the cutline-relative trapezoid loft. A topology mismatch across
+        z-keys along the line raises ``NotImplementedError`` (from the loft);
+        splitting the entry's z-ranges or picking a different ``direction``
+        are the remedies.
+        """
+        import math
+
+        dx, dy = direction
+        norm = math.hypot(dx, dy)
+        if norm == 0.0:
+            raise ValueError("resolve_zline direction must be non-zero")
+        ux, uy = dx / norm, dy / norm
+        bbox = cell.bbox()  # DBox in µm
+        half = 1.0 if bbox.empty() else math.hypot(bbox.width(), bbox.height()) + 1.0
+        x, y = point
+        cutline = ((x - half * ux, y - half * uy), (x + half * ux, y + half * uy))
+        return self.resolve_cutline(cell, cutline).slice_at_s(half)
+
 
 def _short_layer_label(layer: LayerBase) -> str:
     """Compact label for a ``LayerBase`` suitable for table output.
