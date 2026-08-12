@@ -405,24 +405,21 @@ plt.show()
 #
 # Both return a `ResolvedStackup1D` carrying the same painter's metadata as
 # the 2D/3D outputs (`mesh_order`, `keep`, `cut_by`, indexed 1:1 with
-# `Stackup.items`). Each slot stores its uncut geometry as a `kdb.Edges` on
-# the slice line — completing the per-dimension pattern (3D prisms hold
-# `kdb.Region`s per z, 2D polygons hold a `kdb.Region`, 1D lines hold a
-# `kdb.Edges`) — with the scalar `(start, end)` dbu tuples available via the
-# `intervals` property. Both wrappers are thin: `resolve_cutline(...)` plus
+# `Stackup.items`). Both wrappers are thin: `resolve_cutline(...)` plus
 # `slice_at_z(z)` / `slice_at_s(s)` on the `ResolvedStackup2D` — resolve the
 # 2D cross-section yourself when you need many slices from one cutline.
 #
-# The painter's algorithm is applied the same way in 2D and 1D:
-# `apply_cuts()` returns the same container type with the subtractions
-# performed as exact klayout booleans (regions in 2D, collinear edges in
-# 1D), cutters emptied, and `cut_by` cleared — the result is the final
-# disjoint material line, still organized per entry. A position-ordered
-# profile (e.g. a 1D index profile for a mode solver) is then a sorted walk
-# over the kept slots' `intervals`. Here is the material column through the
-# middle of the rib waveguide. Note the painter's algorithm at work: the
-# rib cuts the slab and lower cladding, while the heater exactly fills the
-# gap between the two claddings:
+# The raw slice keeps every entry's **uncut** extent — overlaps between
+# entries are preserved, so downstream tools can still recover the interface
+# between two touching entries from the raw geometry. `apply_cuts()` applies
+# the painter's algorithm as exact klayout booleans: later entries win,
+# `keep=False` cutters remove material from earlier entries and are
+# themselves emptied, and `cut_by` is cleared. It returns the same container
+# type holding the final, disjoint material line — the 1D analogue of what
+# `plot_cross_section(apply_cuts=True)` does in 2D. Here is the material
+# column through the middle of the rib waveguide. Note the painter's
+# algorithm at work: the rib cuts the slab and lower cladding, while the
+# heater exactly fills the gap between the two claddings:
 
 # %%
 column = stack.resolve_zline(cell, (L / 2, 0.0)).apply_cuts()
@@ -431,14 +428,24 @@ for a, b, name in profile:
     print(f"{name:<12s}  z = {a * column.dbu:6.3f} → {b * column.dbu:6.3f} µm")
 
 # %% [markdown]
-# And the transverse extent of each entry at z = 100 nm — inside the rib and
-# slab. The slanted rib sidewall is honored: at z = 100 nm the rib is
-# slightly narrower than its base width, exactly as the 2D loft interpolates
-# it:
+# `ResolvedStackup1D.lines` is 1:1 with the stackup's entries: each slot
+# holds its geometry as a `kdb.Edges` on the slice line, with the scalar
+# `(start, end)` dbu tuples available via the `intervals` property (multiply
+# by `.dbu`, as above, to convert to µm). The printout above is exactly the
+# sorted walk over the kept slots' `intervals` — disjoint segments in
+# coordinate order, where a gap between consecutive segments means no
+# material at that position.
+
+# %% [markdown]
+# And the transverse extent of each entry at z = 50 nm — inside the lower
+# cladding, the slab, and the rib. The rib cuts a hole in the slab, and the
+# slab in turn cuts the lower cladding. The slanted rib sidewall is honored
+# too: at z = 50 nm the rib is already slightly narrower than its 500 nm
+# base width, exactly as the 2D loft interpolates it:
 
 # %%
 cutline = ((L / 2, -W + 1.0), (L / 2, W - 1.0))
-xyline = stack.resolve_xyline(cell, cutline, z=0.1).apply_cuts()
+xyline = stack.resolve_xyline(cell, cutline, z=0.05).apply_cuts()
 for a, b, name in sorted(
     (a, b, line.name) for line in xyline.lines if line.keep for a, b in line.intervals
 ):
@@ -453,7 +460,7 @@ for a, b, name in sorted(
 fig, ax = plt.subplots(figsize=(8, 4.5))
 gw.plot_cross_section(resolved_2d, ax=ax)
 ax.axvline(W - 1.0, color="k", ls="--", lw=1)  # s of y=0 on this cutline
-ax.axhline(0.1, color="k", ls=":", lw=1)
+ax.axhline(0.05, color="k", ls=":", lw=1)
 ax.set_title("1D slice lines over the 2D cross-section")
 plt.tight_layout()
 plt.show()
