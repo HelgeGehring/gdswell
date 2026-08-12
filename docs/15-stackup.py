@@ -31,8 +31,8 @@
 #   with the per-entry `kdb.Edges` on a line — and `apply_cuts()` reduces
 #   them to the final disjoint 1D material profile.
 #
-# Both outputs share the same minimalistic painter's-algorithm metadata: `mesh_order`,
-# `keep`, and `cut_by`. This page works through both outputs on a small but
+# All three outputs share the same minimalistic painter's-algorithm metadata: `mesh_order`,
+# `keep`, and `cut_by`. This page works through all three outputs on a small but
 # realistic silicon-photonic stack: a rib waveguide with a TiN heater wired
 # out to a metal pad.
 
