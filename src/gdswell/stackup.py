@@ -705,6 +705,30 @@ class ResolvedStackup2D:
         ``slice_at_z``."""
         return self._slice(at_um=s, axis="z")
 
+    def apply_cuts(self) -> ResolvedStackup2D:
+        """Painter's algorithm as data: subtract each slot's ``cut_by``
+        regions from its own, empty ``keep=False`` cutters (they have done
+        their job), clear ``cut_by`` (no cuts remain pending).
+
+        The output is the same container type with the 1:1 slot indexing
+        preserved; the union of ``keep=True`` regions is disjoint (later
+        entries won) and the operation is idempotent. 3D has no counterpart
+        on purpose — robust 3D CSG is the backend's job — but 2D and 1D cuts
+        are exact klayout booleans, so the library owns them uniformly
+        (see ``ResolvedStackup1D.apply_cuts``). ``plot_cross_section``
+        consumes this for its ``apply_cuts=True`` mode.
+        """
+        polygons = []
+        for p in self.polygons:
+            if not p.keep:
+                region = kdb.Region()
+            else:
+                region = p.region.dup()
+                for j in p.cut_by:
+                    region -= self.polygons[j].region
+            polygons.append(replace(p, region=region, cut_by=()))
+        return replace(self, polygons=tuple(polygons))
+
 
 @dataclass(frozen=True, eq=False)
 class ResolvedEdges1D:

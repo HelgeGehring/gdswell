@@ -1851,3 +1851,55 @@ def test_apply_cuts_1d_empty():
     from gdswell.stackup import ResolvedStackup1D
 
     assert ResolvedStackup1D().apply_cuts() == ResolvedStackup1D()
+
+
+# ---- unified painter's cuts: ResolvedStackup2D.apply_cuts -----------------
+
+
+def test_apply_cuts_2d_subtracts_later_overlaps():
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.3)
+    b = StackupEntry.uniform("B", PDK.WG, 0.2, 0.5)
+    rs2 = (a + b).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
+    cut = rs2.apply_cuts()
+    # A (z 0..0.3) loses its overlap with the later B (z 0.2..0.5).
+    assert cut.polygons[0].region.bbox() == kdb.Box(1000, 0, 2000, 200)
+    assert cut.polygons[1].region.bbox() == kdb.Box(1000, 200, 2000, 500)
+    assert all(p.cut_by == () for p in cut.polygons)
+    assert [p.name for p in cut.polygons] == ["A", "B"]  # 1:1 indexing kept
+
+
+def test_apply_cuts_2d_cutter_emptied_but_kept():
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.3)
+    m = StackupEntry.uniform("M", PDK.WG, 0.1, 0.2)
+    cut = (a - m).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5))).apply_cuts()
+    assert [p.keep for p in cut.polygons] == [True, False]
+    assert cut.polygons[1].region.is_empty()  # cutter has done its job
+    # A is carved into two slabs (z 0..0.1 and 0.2..0.3): bbox unchanged,
+    # area reduced by the 1000×100 dbu bite.
+    assert cut.polygons[0].region.bbox() == kdb.Box(1000, 0, 2000, 300)
+    assert cut.polygons[0].region.area() == 1000 * 200
+
+
+def test_apply_cuts_2d_idempotent():
+    rs2 = _two_square_stack_2d()
+    once = rs2.apply_cuts()
+    twice = once.apply_cuts()
+    for p1, p2 in zip(once.polygons, twice.polygons):
+        assert (p1.region ^ p2.region).is_empty()  # geometric equality
+
+
+def test_apply_cuts_2d_commutes_with_1d_slice_at_generic_z():
+    """slice(apply_cuts(2D)) and apply_cuts(slice(2D)) agree away from cut
+    seams (compared on intervals; the two paths differ in cut_by
+    bookkeeping, and exactly ON a seam the closed-interval slice of the cut
+    region still sees the boundary while the 1D subtraction removes it)."""
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.3)
+    b = StackupEntry.uniform("B", PDK.WG, 0.2, 0.5)
+    rs2 = (a + b).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
+    for z in (0.1, 0.25, 0.4):
+        via_2d = rs2.apply_cuts().slice_at_z(z)
+        via_1d = rs2.slice_at_z(z).apply_cuts()
+        assert [ln.intervals for ln in via_2d.lines] == [ln.intervals for ln in via_1d.lines]

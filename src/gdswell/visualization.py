@@ -141,15 +141,13 @@ def plot_cross_section(
 
     legend_seen: set[str] = set()
 
+    if apply_cuts:
+        resolved_2d = resolved_2d.apply_cuts()
+
     for prism in resolved_2d.polygons:
         if not prism.keep:
             continue
-        if apply_cuts:
-            final = prism.region.dup()
-            for j in prism.cut_by:
-                final -= resolved_2d.polygons[j].region
-        else:
-            final = prism.region
+        final = prism.region
         if final.is_empty():
             continue
 
