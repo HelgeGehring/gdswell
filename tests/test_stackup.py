@@ -1648,3 +1648,120 @@ def test_resolved_stackup_1d_defaults_frozen_and_equality():
         lines=(ResolvedEdges1D(name="A", edges=_hedges([(0, 500)]), mesh_order=0),)
     )
     assert x == y
+
+
+# ---- 1D slices: ResolvedStackup2D.slice_at_z / slice_at_s -----------------
+
+
+def _two_square_stack_2d():
+    """resolve_cutline over both squares: horizontal cutline y=0.5 from x=-1
+    to x=4, so WG spans s=1000..2000 and CLAD spans s=3000..4000 (dbu)."""
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    clad = StackupEntry.uniform("Clad", PDK.CLAD, 0.0, 0.5)
+    return (si + clad).resolve_cutline(cell, ((-1.0, 0.5), (4.0, 0.5)))
+
+
+def test_slice_at_z_basic_intervals_and_metadata():
+    from gdswell.stackup import ResolvedStackup1D
+
+    rs1 = _two_square_stack_2d().slice_at_z(0.1)
+    assert isinstance(rs1, ResolvedStackup1D)
+    assert rs1.axis == "s"
+    assert rs1.coordinate == 0.1
+    assert rs1.dbu == 0.001
+    assert [ln.name for ln in rs1.lines] == ["Si", "Clad"]
+    assert [ln.mesh_order for ln in rs1.lines] == [0, 1]
+    assert rs1.lines[0].intervals == ((1000, 2000),)
+    assert rs1.lines[1].intervals == ((3000, 4000),)
+    # Disjoint on this line → no cut_by edge despite both being present.
+    assert rs1.lines[0].cut_by == ()
+
+
+def test_slice_at_z_above_stack_all_empty():
+    rs1 = _two_square_stack_2d().slice_at_z(5.0)
+    assert all(ln.intervals == () for ln in rs1.lines)
+
+
+def test_slice_at_z_boundary_closed_interval():
+    """Slicing exactly at an entry's zmin/zmax returns its interval."""
+    rs1 = _two_square_stack_2d().slice_at_z(0.0)
+    assert rs1.lines[0].intervals == ((1000, 2000),)
+    rs1 = _two_square_stack_2d().slice_at_z(0.22)
+    assert rs1.lines[0].intervals == ((1000, 2000),)
+
+
+def test_slice_at_z_slanted_sidewall_interpolates():
+    """A z-varying entry (50 nm inset at the top) sliced midway shows the
+    linearly interpolated bounds, exactly as the trapezoid loft defines."""
+    cell = _cell_with_two_squares()
+    rib = StackupEntry("Rib", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
+    rs2 = Stackup.of(rib).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
+    rs1 = rs2.slice_at_z(0.11)
+    # At z=0: s in (1000, 2000); at z=0.22: (1050, 1950); midway: (1025, 1975).
+    assert rs1.lines[0].intervals == ((1025, 1975),)
+
+
+def test_slice_at_s_z_extents():
+    """Vertical slice through the WG square only."""
+    rs1 = _two_square_stack_2d().slice_at_s(1.5)
+    assert rs1.axis == "z"
+    assert rs1.coordinate == 1.5
+    assert rs1.lines[0].intervals == ((0, 220),)  # Si: z 0..0.22 µm
+    assert rs1.lines[1].intervals == ()  # Clad square not at this s
+    assert rs1.lines[0].cut_by == ()
+
+
+def test_slice_at_s_overlapping_entries_cut_by():
+    """Two entries on the same footprint → genuine 1D overlap → cut_by edge."""
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.3)
+    b = StackupEntry.uniform("B", PDK.WG, 0.2, 0.5)
+    rs2 = (a + b).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
+    rs1 = rs2.slice_at_s(1.5)
+    assert rs1.lines[0].intervals == ((0, 300),)
+    assert rs1.lines[1].intervals == ((200, 500),)
+    assert rs1.lines[0].cut_by == (1,)
+    assert rs1.lines[1].cut_by == ()
+
+
+def test_slice_at_s_touching_entries_no_cut_by():
+    """Entries that only touch (one ends where the other begins) get NO
+    cut_by edge: a touching cut subtracts zero measure, and interfaces are
+    recoverable from the uncut lines."""
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.2)
+    b = StackupEntry.uniform("B", PDK.WG, 0.2, 0.5)
+    rs1 = (a + b).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5))).slice_at_s(1.5)
+    assert rs1.lines[0].intervals == ((0, 200),)
+    assert rs1.lines[1].intervals == ((200, 500),)
+    assert rs1.lines[0].cut_by == ()
+
+
+def test_slice_multi_z_key_entry_merges_z_intervals():
+    """A 3-z-key entry lofts to stacked trapezoids; a z-line through them
+    reports ONE merged interval."""
+    cell = _cell_with_two_squares()
+    tri = StackupEntry("Tri", {0.0: PDK.WG, 0.1: PDK.WG, 0.3: PDK.WG})
+    rs2 = Stackup.of(tri).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
+    rs1 = rs2.slice_at_s(1.5)
+    assert rs1.lines[0].intervals == ((0, 300),)
+
+
+def test_slice_keep_false_slot_retained():
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.3)
+    m = StackupEntry.uniform("M", PDK.WG, 0.1, 0.2)
+    rs1 = (a - m).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5))).slice_at_s(1.5)
+    assert [ln.keep for ln in rs1.lines] == [True, False]
+    assert rs1.lines[1].intervals == ((100, 200),)
+    assert rs1.lines[0].cut_by == (1,)
+
+
+def test_slice_zero_thickness_entry_empty():
+    """Single-z-key sheets are empty in the 2D loft, hence in 1D slices."""
+    cell = _cell_with_two_squares()
+    sheet = StackupEntry("Sheet", {0.1: PDK.WG})
+    rs2 = Stackup.of(sheet).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
+    assert rs2.slice_at_z(0.1).lines[0].intervals == ()
+    assert rs2.slice_at_s(1.5).lines[0].intervals == ()

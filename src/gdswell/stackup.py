@@ -668,6 +668,43 @@ class ResolvedStackup2D:
     polygons: tuple[ResolvedPolygon2D, ...] = ()
     dbu: float = 0.001
 
+    def _slice(self, *, at_um: float, axis: Literal["s", "z"]) -> ResolvedStackup1D:
+        # axis="s" ⇔ fixed z ⇔ horizontal probe line; axis="z" ⇔ fixed s ⇔ vertical.
+        horizontal = axis == "s"
+        at = int(round(at_um / self.dbu))
+        raw = [_line_slice_edges(p.region, horizontal=horizontal, at=at) for p in self.polygons]
+        n = len(raw)
+        # cut_by from exact 1D overlap (klayout edge intersection). Touching
+        # is excluded on purpose: a touching cut subtracts zero measure, so
+        # it can never change apply_cuts() output; downstream tools recover
+        # interfaces from the uncut edges.
+        lines = tuple(
+            ResolvedEdges1D(
+                name=p.name,
+                edges=raw[i],
+                mesh_order=p.mesh_order,
+                keep=p.keep,
+                cut_by=tuple(j for j in range(i + 1, n) if not (raw[i] & raw[j]).is_empty()),
+            )
+            for i, p in enumerate(self.polygons)
+        )
+        return ResolvedStackup1D(lines=lines, dbu=self.dbu, axis=axis, coordinate=at_um)
+
+    def slice_at_z(self, z: float) -> ResolvedStackup1D:
+        """Intersect every polygon with the horizontal line at height ``z``
+        (µm) and return the per-slot edge sets in s (``axis="s"``). Boundary
+        queries are closed-interval: slicing exactly at an entry's zmin or
+        zmax returns its footprint there. Prefer an interior z when the
+        distinction matters."""
+        return self._slice(at_um=z, axis="s")
+
+    def slice_at_s(self, s: float) -> ResolvedStackup1D:
+        """Intersect every polygon with the vertical line at arclength ``s``
+        (µm along the cutline) and return the per-slot edge sets in z
+        (``axis="z"``). Same closed-interval boundary semantics as
+        ``slice_at_z``."""
+        return self._slice(at_um=s, axis="z")
+
 
 @dataclass(frozen=True, eq=False)
 class ResolvedEdges1D:
