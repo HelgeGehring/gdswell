@@ -778,6 +778,27 @@ class ResolvedStackup1D:
     axis: Literal["s", "z"] = "s"
     coordinate: float = 0.0
 
+    def apply_cuts(self) -> ResolvedStackup1D:
+        """Painter's algorithm as data — the 1D counterpart of
+        ``ResolvedStackup2D.apply_cuts`` with the identical contract:
+        subtract each slot's ``cut_by`` edges from its own (collinear
+        klayout edge subtraction, so a later slot that only touches removes
+        nothing), empty ``keep=False`` cutters (they have done their job),
+        clear ``cut_by`` (no cuts remain pending). The 1:1 slot indexing is
+        preserved and the operation is idempotent.
+        """
+        lines = []
+        for line in self.lines:
+            if not line.keep:
+                edges = kdb.Edges()
+            else:
+                edges = line.edges.dup()
+                for j in line.cut_by:
+                    edges -= self.lines[j].edges
+                edges = edges.merged()
+            lines.append(replace(line, edges=edges, cut_by=()))
+        return replace(self, lines=tuple(lines))
+
 
 def _build_synthetic_straight(
     xs_static: "CrossSection",

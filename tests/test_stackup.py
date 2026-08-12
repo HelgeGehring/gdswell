@@ -1765,3 +1765,89 @@ def test_slice_zero_thickness_entry_empty():
     rs2 = Stackup.of(sheet).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
     assert rs2.slice_at_z(0.1).lines[0].intervals == ()
     assert rs2.slice_at_s(1.5).lines[0].intervals == ()
+
+
+# ---- 1D slices: apply_cuts -------------------------------------------------
+
+
+def _line1d(name, order, intervals, keep=True, cut_by=()):
+    from gdswell.stackup import ResolvedEdges1D
+
+    return ResolvedEdges1D(
+        name=name, edges=_hedges(intervals), mesh_order=order, keep=keep, cut_by=cut_by
+    )
+
+
+def test_apply_cuts_1d_later_entry_wins():
+    from gdswell.stackup import ResolvedStackup1D
+
+    rs1 = ResolvedStackup1D(
+        lines=(_line1d("A", 0, [(0, 1000)], cut_by=(1,)), _line1d("B", 1, [(400, 600)]))
+    )
+    cut = rs1.apply_cuts()
+    assert cut.lines[0].intervals == ((0, 400), (600, 1000))
+    assert cut.lines[1].intervals == ((400, 600),)
+    assert all(ln.cut_by == () for ln in cut.lines)
+    assert [ln.name for ln in cut.lines] == ["A", "B"]  # 1:1 indexing kept
+
+
+def test_apply_cuts_1d_cutter_emptied_but_kept():
+    from gdswell.stackup import ResolvedStackup1D
+
+    rs1 = ResolvedStackup1D(
+        lines=(
+            _line1d("A", 0, [(0, 1000)], cut_by=(1,)),
+            _line1d("M", 1, [(400, 600)], keep=False),
+        )
+    )
+    cut = rs1.apply_cuts()
+    assert cut.lines[0].intervals == ((0, 400), (600, 1000))
+    assert [ln.keep for ln in cut.lines] == [True, False]
+    assert cut.lines[1].intervals == ()  # cutter has done its job
+
+
+def test_apply_cuts_1d_touching_removes_nothing():
+    from gdswell.stackup import ResolvedStackup1D
+
+    rs1 = ResolvedStackup1D(
+        lines=(_line1d("A", 0, [(0, 500)], cut_by=(1,)), _line1d("B", 1, [(500, 900)]))
+    )
+    cut = rs1.apply_cuts()
+    assert cut.lines[0].intervals == ((0, 500),)
+
+
+def test_apply_cuts_1d_idempotent():
+    from gdswell.stackup import ResolvedStackup1D
+
+    rs1 = ResolvedStackup1D(
+        lines=(_line1d("A", 0, [(0, 1000)], cut_by=(1,)), _line1d("B", 1, [(400, 600)]))
+    )
+    once = rs1.apply_cuts()
+    assert once.apply_cuts() == once  # value equality via geometric edge comparison
+
+
+def test_apply_cuts_1d_chained_cut_graph():
+    """Three-slot chain: A loses to B and C, B loses to C — the material
+    profile interleaves accordingly (walked via per-slot intervals)."""
+    from gdswell.stackup import ResolvedStackup1D
+
+    rs1 = ResolvedStackup1D(
+        lines=(
+            _line1d("A", 0, [(0, 1000)], cut_by=(1, 2)),
+            _line1d("B", 1, [(100, 200)], cut_by=(2,)),
+            _line1d("C", 2, [(150, 300)]),
+        )
+    )
+    cut = rs1.apply_cuts()
+    assert cut.lines[0].intervals == ((0, 100), (300, 1000))
+    assert cut.lines[1].intervals == ((100, 150),)
+    assert cut.lines[2].intervals == ((150, 300),)
+    # The docs' ordered-profile idiom over this output:
+    profile = sorted((a, b, ln.name) for ln in cut.lines if ln.keep for a, b in ln.intervals)
+    assert profile == [(0, 100, "A"), (100, 150, "B"), (150, 300, "C"), (300, 1000, "A")]
+
+
+def test_apply_cuts_1d_empty():
+    from gdswell.stackup import ResolvedStackup1D
+
+    assert ResolvedStackup1D().apply_cuts() == ResolvedStackup1D()
