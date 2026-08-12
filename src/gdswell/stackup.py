@@ -807,3 +807,25 @@ def _loft_intervals(
             )
             region.insert(poly)
     return region
+
+
+def _line_slice_edges(region: kdb.Region, *, horizontal: bool, at: int) -> kdb.Edges:
+    """Intersect ``region`` with an axis-aligned line and return the merged
+    collinear edge set lying inside it, in absolute dbu coordinates.
+
+    ``horizontal=True``: line ``y = at``; ``horizontal=False``: line
+    ``x = at``. The probe edge spans the region bbox plus a small margin, so
+    the intersection covers the region's full extent. A line exactly on a
+    region boundary counts as inside (klayout edge∩region semantics), so
+    slice queries are closed-interval. ``merged()`` coalesces the touching
+    pieces that adjacent unmerged loft trapezoids produce.
+    """
+    if region.is_empty():
+        return kdb.Edges()
+    bbox = region.bbox()
+    margin = 2
+    if horizontal:
+        probe = kdb.Edge(kdb.Point(bbox.left - margin, at), kdb.Point(bbox.right + margin, at))
+    else:
+        probe = kdb.Edge(kdb.Point(at, bbox.bottom - margin), kdb.Point(at, bbox.top + margin))
+    return (kdb.Edges([probe]) & region).merged()

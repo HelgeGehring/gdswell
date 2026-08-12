@@ -1472,3 +1472,93 @@ def test_stackup_scale_z_empty_zero_factor_raises():
     # Spec: the factor==0 guard must fire even when there are no items to reach.
     with pytest.raises(ValueError, match="scale_z factor must be non-zero"):
         Stackup().scale_z(0.0)
+
+
+# ---- 1D slices: _line_slice_edges -----------------------------------------
+
+
+def _hedges(intervals, y=0):
+    """Horizontal collinear kdb.Edges at height y from (start, end) dbu tuples."""
+    return kdb.Edges([kdb.Edge(kdb.Point(a, y), kdb.Point(b, y)) for a, b in intervals])
+
+
+def _vedges(intervals, x=0):
+    """Vertical collinear kdb.Edges at position x from (start, end) dbu tuples."""
+    return kdb.Edges([kdb.Edge(kdb.Point(x, a), kdb.Point(x, b)) for a, b in intervals])
+
+
+def test_line_slice_horizontal_absolute_coordinates():
+    """Result edges carry absolute (s, z) coordinates of the slice plane.
+    Comparison is geometric: symmetric difference with the expected set."""
+    from gdswell.stackup import _line_slice_edges
+
+    region = kdb.Region(kdb.Box(1000, 500, 3000, 1500))
+    edges = _line_slice_edges(region, horizontal=True, at=700)
+    assert (edges ^ _hedges([(1000, 3000)], y=700)).is_empty()
+
+
+def test_line_slice_vertical_absolute_coordinates():
+    from gdswell.stackup import _line_slice_edges
+
+    region = kdb.Region(kdb.Box(1000, 500, 3000, 1500))
+    edges = _line_slice_edges(region, horizontal=False, at=1500)
+    assert (edges ^ _vedges([(500, 1500)], x=1500)).is_empty()
+
+
+def test_line_slice_on_boundary_is_inside():
+    """A line exactly on the region boundary returns the full interval
+    (klayout edge∩region counts border edges as inside) — closed intervals."""
+    from gdswell.stackup import _line_slice_edges
+
+    region = kdb.Region(kdb.Box(0, 0, 2000, 1000))
+    at_bottom = _line_slice_edges(region, horizontal=True, at=0)
+    at_top = _line_slice_edges(region, horizontal=True, at=1000)
+    assert (at_bottom ^ _hedges([(0, 2000)], y=0)).is_empty()
+    assert (at_top ^ _hedges([(0, 2000)], y=1000)).is_empty()
+
+
+def test_line_slice_misses_region():
+    from gdswell.stackup import _line_slice_edges
+
+    region = kdb.Region(kdb.Box(0, 0, 2000, 1000))
+    assert _line_slice_edges(region, horizontal=True, at=5000).is_empty()
+    assert _line_slice_edges(region, horizontal=False, at=-500).is_empty()
+
+
+def test_line_slice_empty_region():
+    from gdswell.stackup import _line_slice_edges
+
+    assert _line_slice_edges(kdb.Region(), horizontal=True, at=0).is_empty()
+
+
+def test_line_slice_merges_touching_pieces_from_unmerged_region():
+    """A vertical line through two stacked unmerged polygons (the shape
+    _loft_intervals produces for multi-z-key entries) yields ONE merged
+    edge, not two touching pieces (count pins the merge; XOR alone would
+    accept either representation)."""
+    from gdswell.stackup import _line_slice_edges
+
+    region = kdb.Region()
+    region.insert(
+        kdb.Polygon(
+            [
+                kdb.Point(0, 0),
+                kdb.Point(1000, 0),
+                kdb.Point(1000, 500),
+                kdb.Point(0, 500),
+            ]
+        )
+    )
+    region.insert(
+        kdb.Polygon(
+            [
+                kdb.Point(0, 500),
+                kdb.Point(1000, 500),
+                kdb.Point(1000, 900),
+                kdb.Point(0, 900),
+            ]
+        )
+    )
+    edges = _line_slice_edges(region, horizontal=False, at=500)
+    assert edges.count() == 1
+    assert (edges ^ _vedges([(0, 900)], x=500)).is_empty()
