@@ -20,9 +20,11 @@ from gdswell.routing import (
     route_z,
 )
 from gdswell.stackup import (
+    ResolvedEdges1D,
     ResolvedPolygon2D,
     ResolvedPrism,
     ResolvedStackup,
+    ResolvedStackup1D,
     ResolvedStackup2D,
     Stackup,
     StackupEntry,
@@ -46,9 +48,11 @@ __all__ = [
     "LayerMapping",
     "Layer",
     "AllLayers",
+    "ResolvedEdges1D",
     "ResolvedPolygon2D",
     "ResolvedPrism",
     "ResolvedStackup",
+    "ResolvedStackup1D",
     "ResolvedStackup2D",
     "Stackup",
     "StackupEntry",

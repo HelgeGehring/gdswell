@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import klayout.db as kdb
 
@@ -667,6 +667,79 @@ class ResolvedStackup2D:
 
     polygons: tuple[ResolvedPolygon2D, ...] = ()
     dbu: float = 0.001
+
+
+@dataclass(frozen=True, eq=False)
+class ResolvedEdges1D:
+    """One slot of a 1D slice: the entry's uncut geometry on the slice line.
+
+    ``edges`` is a ``kdb.Edges`` of collinear edges lying on the probe line
+    in the (s, z) plane, in dbu, merged. It completes the per-dimension
+    container symmetry (``ResolvedPrism`` → per-z ``Region``,
+    ``ResolvedPolygon2D`` → ``Region``, this → ``Edges``). The scalar
+    consumer form is the ``intervals`` property.
+
+    The metadata fields carry the same semantics as ``ResolvedPolygon2D``:
+    1:1 indexing with ``Stackup.items``, forward-only painter's ``cut_by``
+    (exact 1D overlap; touching excluded, since a touching cut subtracts
+    zero measure and interfaces are recoverable from the uncut edges),
+    ``keep=False`` slots retained so ``cut_by`` indices stay valid.
+
+    klayout containers compare by identity, so equality is implemented
+    geometrically (symmetric-difference emptiness), like ``StackupEntry``.
+    """
+
+    name: str
+    edges: kdb.Edges
+    mesh_order: int
+    keep: bool = True
+    cut_by: tuple[int, ...] = ()
+
+    @property
+    def intervals(self) -> tuple[tuple[int, int], ...]:
+        """Sorted ``(start, end)`` dbu tuples extracted from ``edges``
+        (merged first, so the result is canonical). The varying coordinate
+        is detected per edge (x for horizontal edges, y otherwise) — all
+        edges of a 1D slice lie on one axis-aligned line, so this is
+        unambiguous."""
+        intervals: list[tuple[int, int]] = []
+        for e in self.edges.merged().each():
+            if e.p1.y == e.p2.y:
+                a, b = e.p1.x, e.p2.x
+            else:
+                a, b = e.p1.y, e.p2.y
+            intervals.append((min(a, b), max(a, b)))
+        return tuple(sorted(intervals))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ResolvedEdges1D):
+            return False
+        return (
+            self.name == other.name
+            and self.mesh_order == other.mesh_order
+            and self.keep == other.keep
+            and self.cut_by == other.cut_by
+            and (self.edges ^ other.edges).is_empty()
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.name, self.mesh_order, self.keep, self.cut_by, self.intervals))
+
+
+@dataclass(frozen=True)
+class ResolvedStackup1D:
+    """Output of the 1D slicers: one ``ResolvedEdges1D`` per source slot.
+
+    ``axis`` names the interval coordinate: ``"s"`` for a slice at fixed z
+    (intervals in arclength along the cutline), ``"z"`` for a slice at fixed
+    s (intervals in stackup height). ``coordinate`` is the fixed value of the
+    other axis, in µm. ``dbu`` converts interval ints to µm (multiply).
+    """
+
+    lines: tuple[ResolvedEdges1D, ...] = ()
+    dbu: float = 0.001
+    axis: Literal["s", "z"] = "s"
+    coordinate: float = 0.0
 
 
 def _build_synthetic_straight(

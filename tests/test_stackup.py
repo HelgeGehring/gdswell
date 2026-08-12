@@ -588,7 +588,12 @@ def test_resolve_single_key_zero_thickness_sheet_preserved():
 
 def test_top_level_exports():
     import gdswell as gw
-    from gdswell.stackup import ResolvedPolygon2D, ResolvedStackup2D
+    from gdswell.stackup import (
+        ResolvedEdges1D,
+        ResolvedPolygon2D,
+        ResolvedStackup1D,
+        ResolvedStackup2D,
+    )
     from gdswell.visualization import plot_cross_section
 
     assert gw.StackupEntry is StackupEntry
@@ -597,6 +602,8 @@ def test_top_level_exports():
     assert gw.ResolvedStackup is ResolvedStackup
     assert gw.ResolvedPolygon2D is ResolvedPolygon2D
     assert gw.ResolvedStackup2D is ResolvedStackup2D
+    assert gw.ResolvedEdges1D is ResolvedEdges1D
+    assert gw.ResolvedStackup1D is ResolvedStackup1D
     assert gw.plot_cross_section is plot_cross_section
 
 
@@ -1562,3 +1569,82 @@ def test_line_slice_merges_touching_pieces_from_unmerged_region():
     edges = _line_slice_edges(region, horizontal=False, at=500)
     assert edges.count() == 1
     assert (edges ^ _vedges([(0, 900)], x=500)).is_empty()
+
+
+# ---- 1D slices: dataclasses -----------------------------------------------
+
+
+def test_resolved_edges_1d_defaults_and_frozen():
+    from gdswell.stackup import ResolvedEdges1D
+
+    line = ResolvedEdges1D(name="A", edges=_hedges([(0, 100)]), mesh_order=0)
+    assert line.keep is True
+    assert line.cut_by == ()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        line.name = "B"  # type: ignore[misc]
+
+
+def test_resolved_edges_1d_intervals_property():
+    """Scalar extraction is canonical: merged (touching/overlapping pieces
+    coalesce), sorted, orientation-independent; vertical edges read y."""
+    from gdswell.stackup import ResolvedEdges1D
+
+    messy = ResolvedEdges1D(
+        name="A",
+        edges=_hedges([(1100, 1200), (0, 500), (400, 900), (1000, 1100)]),
+        mesh_order=0,
+    )
+    assert messy.intervals == ((0, 900), (1000, 1200))
+
+    reversed_edge = ResolvedEdges1D(
+        name="A",
+        edges=kdb.Edges([kdb.Edge(kdb.Point(500, 0), kdb.Point(100, 0))]),
+        mesh_order=0,
+    )
+    assert reversed_edge.intervals == ((100, 500),)
+
+    vertical = ResolvedEdges1D(name="A", edges=_vedges([(0, 220)], x=700), mesh_order=0)
+    assert vertical.intervals == ((0, 220),)
+
+    empty = ResolvedEdges1D(name="A", edges=kdb.Edges(), mesh_order=0)
+    assert empty.intervals == ()
+
+
+def test_resolved_edges_1d_value_equality():
+    """Equality is geometric (XOR-emptiness), robust to edge ordering,
+    orientation, and split representation — unlike klayout's identity ==."""
+    from gdswell.stackup import ResolvedEdges1D
+
+    a = ResolvedEdges1D(name="A", edges=_hedges([(0, 500), (600, 900)]), mesh_order=0)
+    b = ResolvedEdges1D(name="A", edges=_hedges([(600, 900), (0, 500)]), mesh_order=0)
+    split = ResolvedEdges1D(
+        name="A", edges=_hedges([(0, 250), (250, 500), (600, 900)]), mesh_order=0
+    )
+    other = ResolvedEdges1D(name="A", edges=_hedges([(0, 501), (600, 900)]), mesh_order=0)
+    renamed = ResolvedEdges1D(name="B", edges=_hedges([(0, 500), (600, 900)]), mesh_order=0)
+    assert a == b
+    assert a == split
+    assert a != other
+    assert a != renamed
+    assert a != "not a line"
+    assert hash(a) == hash(b) == hash(split)
+
+
+def test_resolved_stackup_1d_defaults_frozen_and_equality():
+    from gdswell.stackup import ResolvedEdges1D, ResolvedStackup1D
+
+    rs1 = ResolvedStackup1D()
+    assert rs1.lines == ()
+    assert rs1.dbu == 0.001
+    assert rs1.axis == "s"
+    assert rs1.coordinate == 0.0
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        rs1.dbu = 0.002  # type: ignore[misc]
+    # Container equality delegates to the lines' geometric equality.
+    x = ResolvedStackup1D(
+        lines=(ResolvedEdges1D(name="A", edges=_hedges([(0, 500)]), mesh_order=0),)
+    )
+    y = ResolvedStackup1D(
+        lines=(ResolvedEdges1D(name="A", edges=_hedges([(0, 500)]), mesh_order=0),)
+    )
+    assert x == y
