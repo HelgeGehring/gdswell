@@ -18,7 +18,7 @@
 #
 # A `Stackup` describes how the 2D layers in your layout extend into 3D — what
 # material lives at what height, how its xy footprint morphs with z, and which
-# entries override which. From the same `Stackup` you can currently produce either of two
+# entries override which. From the same `Stackup` you can currently produce any of three
 # outputs:
 #
 # - **3D**: `stack.resolve(cell)` returns a `ResolvedStackup` describing how
@@ -26,9 +26,13 @@
 # - **2D**: `stack.resolve_cutline(cell, cutline)` or
 #   `stack.resolve_cross_section(cs)` returns a `ResolvedStackup2D` containing
 #   the (already processed) 2D polygons of the cross-sectional view.
+# - **1D**: `stack.resolve_zline(cell, point)` or
+#   `stack.resolve_xyline(cell, cutline, z)` returns a `ResolvedStackup1D`
+#   with the per-entry `kdb.Edges` on a line — and `apply_cuts()` reduces
+#   them to the final disjoint 1D material profile.
 #
-# Both outputs share the same minimalistic painter's-algorithm metadata: `mesh_order`,
-# `keep`, and `cut_by`. This page works through both outputs on a small but
+# All three outputs share the same minimalistic painter's-algorithm metadata: `mesh_order`,
+# `keep`, and `cut_by`. This page works through all three outputs on a small but
 # realistic silicon-photonic stack: a rib waveguide with a TiN heater wired
 # out to a metal pad.
 
@@ -346,6 +350,10 @@ plt.show()
 # you see each prism's final, carved patch. Compare with `apply_cuts=False`,
 # which renders the raw per-entry regions before any subtraction. This is useful
 # to debug painter's order.
+# The cut is also available as data: `resolved_2d.apply_cuts()` returns a
+# new `ResolvedStackup2D` with the subtractions applied (cutters emptied,
+# `cut_by` cleared) — it is exactly what the plotter uses internally, and
+# `ResolvedStackup1D.apply_cuts()` does the same for 1D slices.
 
 # %%
 fig, ax = plt.subplots(figsize=(8, 4.5))
@@ -381,6 +389,79 @@ gw.plot_cross_section(resolved_xs, ax=ax)
 ax.set_ylim(-0.1, 0.35)
 ax.set_aspect("auto")
 ax.set_title("Cross-section evaluated directly from a CrossSection (zoom on Si)")
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# ## Slicing in 1D — `resolve_zline` and `resolve_xyline`
+#
+# Two convenience wrappers reduce the same stackup to 1D:
+#
+# - `stack.resolve_zline(cell, point)` answers "what is the material stack at
+#   this xy location?" — the z-intervals occupied by every entry on a vertical
+#   line through the point.
+# - `stack.resolve_xyline(cell, cutline, z)` answers "where is each entry
+#   along this cutline at height z?" — intervals in arclength `s`.
+#
+# Both return a `ResolvedStackup1D` carrying the same painter's metadata as
+# the 2D/3D outputs (`mesh_order`, `keep`, `cut_by`, indexed 1:1 with
+# `Stackup.items`). Both wrappers are thin: `resolve_cutline(...)` plus
+# `slice_at_z(z)` / `slice_at_s(s)` on the `ResolvedStackup2D` — resolve the
+# 2D cross-section yourself when you need many slices from one cutline.
+#
+# The raw slice keeps every entry's **uncut** extent — overlaps between
+# entries are preserved, so downstream tools can still recover the interface
+# between two touching entries from the raw geometry. `apply_cuts()` applies
+# the painter's algorithm as exact klayout booleans: later entries win,
+# `keep=False` cutters remove material from earlier entries and are
+# themselves emptied, and `cut_by` is cleared. It returns the same container
+# type holding the final, disjoint material line — the 1D analogue of what
+# `plot_cross_section(apply_cuts=True)` does in 2D. Here is the material
+# column through the middle of the rib waveguide. Note the painter's
+# algorithm at work: the rib cuts the slab and lower cladding, while the
+# heater exactly fills the gap between the two claddings:
+
+# %%
+column = stack.resolve_zline(cell, (L / 2, 0.0)).apply_cuts()
+profile = sorted((a, b, line.name) for line in column.lines if line.keep for a, b in line.intervals)
+for a, b, name in profile:
+    print(f"{name:<12s}  z = {a * column.dbu:6.3f} → {b * column.dbu:6.3f} µm")
+
+# %% [markdown]
+# `ResolvedStackup1D.lines` is 1:1 with the stackup's entries: each slot
+# holds its geometry as a `kdb.Edges` on the slice line, with the scalar
+# `(start, end)` dbu tuples available via the `intervals` property (multiply
+# by `.dbu`, as above, to convert to µm). The printout above is exactly the
+# sorted walk over the kept slots' `intervals` — disjoint segments in
+# coordinate order, where a gap between consecutive segments means no
+# material at that position.
+
+# %% [markdown]
+# And the transverse extent of each entry at z = 50 nm — inside the lower
+# cladding, the slab, and the rib. The rib cuts a hole in the slab, and the
+# slab in turn cuts the lower cladding. The slanted rib sidewall is honored
+# too: at z = 50 nm the rib is already slightly narrower than its 500 nm
+# base width, exactly as the 2D loft interpolates it:
+
+# %%
+cutline = ((L / 2, -W + 1.0), (L / 2, W - 1.0))
+xyline = stack.resolve_xyline(cell, cutline, z=0.05).apply_cuts()
+for a, b, name in sorted(
+    (a, b, line.name) for line in xyline.lines if line.keep for a, b in line.intervals
+):
+    print(f"{name:<12s}  s = {a * xyline.dbu:6.3f} → {b * xyline.dbu:6.3f} µm")
+
+# %% [markdown]
+# The two slice lines drawn on the 2D cross-section — the vertical line is
+# the `resolve_zline` probe at the rib center, the horizontal one the
+# `resolve_xyline` height:
+
+# %%
+fig, ax = plt.subplots(figsize=(8, 4.5))
+gw.plot_cross_section(resolved_2d, ax=ax)
+ax.axvline(W - 1.0, color="k", ls="--", lw=1)  # s of y=0 on this cutline
+ax.axhline(0.05, color="k", ls=":", lw=1)
+ax.set_title("1D slice lines over the 2D cross-section")
 plt.tight_layout()
 plt.show()
 

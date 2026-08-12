@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import klayout.db as kdb
 
@@ -531,6 +531,50 @@ class Stackup:
         cell, cutline = _build_synthetic_straight(xs_static)
         return self.resolve_cutline(cell, cutline)
 
+    def resolve_xyline(
+        self,
+        cell: "gw.Cell",
+        cutline: tuple[tuple[float, float], tuple[float, float]],
+        z: float,
+    ) -> ResolvedStackup1D:
+        """1D slice along an xy cutline at height ``z`` (µm): the s-intervals
+        where each entry's material is present. Equivalent to
+        ``resolve_cutline(cell, cutline).slice_at_z(z)`` — resolve the 2D
+        cross-section yourself if you need several z-heights from one line.
+        """
+        return self.resolve_cutline(cell, cutline).slice_at_z(z)
+
+    def resolve_zline(
+        self,
+        cell: "gw.Cell",
+        point: tuple[float, float],
+        direction: tuple[float, float] = (1.0, 0.0),
+    ) -> ResolvedStackup1D:
+        """1D slice in z at an xy ``point`` (µm): the z-intervals occupied by
+        each entry at that location.
+
+        Builds a cutline through ``point`` along ``direction`` long enough to
+        span the cell bbox (+1 µm margin), resolves the 2D cross-section, and
+        slices it at the point's arclength. ``direction`` only matters for
+        entries with slanted sidewalls: their intermediate-z bounds come from
+        the cutline-relative trapezoid loft. A topology mismatch across
+        z-keys along the line raises ``NotImplementedError`` (from the loft);
+        splitting the entry's z-ranges or picking a different ``direction``
+        are the remedies.
+        """
+        import math
+
+        dx, dy = direction
+        norm = math.hypot(dx, dy)
+        if norm == 0.0:
+            raise ValueError("resolve_zline direction must be non-zero")
+        ux, uy = dx / norm, dy / norm
+        bbox = cell.bbox()  # DBox in µm
+        half = 1.0 if bbox.empty() else math.hypot(bbox.width(), bbox.height()) + 1.0
+        x, y = point
+        cutline = ((x - half * ux, y - half * uy), (x + half * ux, y + half * uy))
+        return self.resolve_cutline(cell, cutline).slice_at_s(half)
+
 
 def _short_layer_label(layer: LayerBase) -> str:
     """Compact label for a ``LayerBase`` suitable for table output.
@@ -667,6 +711,161 @@ class ResolvedStackup2D:
 
     polygons: tuple[ResolvedPolygon2D, ...] = ()
     dbu: float = 0.001
+
+    def _slice(self, *, at_um: float, axis: Literal["s", "z"]) -> ResolvedStackup1D:
+        # axis="s" ⇔ fixed z ⇔ horizontal probe line; axis="z" ⇔ fixed s ⇔ vertical.
+        horizontal = axis == "s"
+        at = int(round(at_um / self.dbu))
+        raw = [_line_slice_edges(p.region, horizontal=horizontal, at=at) for p in self.polygons]
+        n = len(raw)
+        # cut_by from exact 1D overlap (klayout edge intersection). Touching
+        # is excluded on purpose: a touching cut subtracts zero measure, so
+        # it can never change apply_cuts() output; downstream tools recover
+        # interfaces from the uncut edges.
+        lines = tuple(
+            ResolvedEdges1D(
+                name=p.name,
+                edges=raw[i],
+                mesh_order=p.mesh_order,
+                keep=p.keep,
+                cut_by=tuple(j for j in range(i + 1, n) if not (raw[i] & raw[j]).is_empty()),
+            )
+            for i, p in enumerate(self.polygons)
+        )
+        return ResolvedStackup1D(lines=lines, dbu=self.dbu, axis=axis, coordinate=at_um)
+
+    def slice_at_z(self, z: float) -> ResolvedStackup1D:
+        """Intersect every polygon with the horizontal line at height ``z``
+        (µm) and return the per-slot edge sets in s (``axis="s"``). Boundary
+        queries are closed-interval: slicing exactly at an entry's zmin or
+        zmax returns its footprint there. Prefer an interior z when the
+        distinction matters."""
+        return self._slice(at_um=z, axis="s")
+
+    def slice_at_s(self, s: float) -> ResolvedStackup1D:
+        """Intersect every polygon with the vertical line at arclength ``s``
+        (µm along the cutline) and return the per-slot edge sets in z
+        (``axis="z"``). Same closed-interval boundary semantics as
+        ``slice_at_z``."""
+        return self._slice(at_um=s, axis="z")
+
+    def apply_cuts(self) -> ResolvedStackup2D:
+        """Painter's algorithm as data: subtract each slot's ``cut_by``
+        regions from its own, empty ``keep=False`` cutters (they have done
+        their job), clear ``cut_by`` (no cuts remain pending).
+
+        The output is the same container type with the 1:1 slot indexing
+        preserved; the union of ``keep=True`` regions is disjoint (later
+        entries won) and the operation is idempotent. 3D has no counterpart
+        on purpose — robust 3D CSG is the backend's job — but 2D and 1D cuts
+        are exact klayout booleans, so the library owns them uniformly
+        (see ``ResolvedStackup1D.apply_cuts``). ``plot_cross_section``
+        consumes this for its ``apply_cuts=True`` mode.
+        """
+        polygons = []
+        for p in self.polygons:
+            if not p.keep:
+                region = kdb.Region()
+            else:
+                region = p.region.dup()
+                for j in p.cut_by:
+                    region -= self.polygons[j].region
+            polygons.append(replace(p, region=region, cut_by=()))
+        return replace(self, polygons=tuple(polygons))
+
+
+@dataclass(frozen=True, eq=False)
+class ResolvedEdges1D:
+    """One slot of a 1D slice: the entry's uncut geometry on the slice line.
+
+    ``edges`` is a ``kdb.Edges`` of collinear edges lying on the probe line
+    in the (s, z) plane, in dbu, merged. It completes the per-dimension
+    container symmetry (``ResolvedPrism`` → per-z ``Region``,
+    ``ResolvedPolygon2D`` → ``Region``, this → ``Edges``). The scalar
+    consumer form is the ``intervals`` property.
+
+    The metadata fields carry the same semantics as ``ResolvedPolygon2D``:
+    1:1 indexing with ``Stackup.items``, forward-only painter's ``cut_by``
+    (exact 1D overlap; touching excluded, since a touching cut subtracts
+    zero measure and interfaces are recoverable from the uncut edges),
+    ``keep=False`` slots retained so ``cut_by`` indices stay valid.
+
+    klayout containers compare by identity, so equality is implemented
+    geometrically (symmetric-difference emptiness), like ``StackupEntry``.
+    """
+
+    name: str
+    edges: kdb.Edges
+    mesh_order: int
+    keep: bool = True
+    cut_by: tuple[int, ...] = ()
+
+    @property
+    def intervals(self) -> tuple[tuple[int, int], ...]:
+        """Sorted ``(start, end)`` dbu tuples extracted from ``edges``
+        (merged first, so the result is canonical). The varying coordinate
+        is detected per edge (x for horizontal edges, y otherwise) — all
+        edges of a 1D slice lie on one axis-aligned line, so this is
+        unambiguous."""
+        intervals: list[tuple[int, int]] = []
+        for e in self.edges.merged().each():
+            if e.p1.y == e.p2.y:
+                a, b = e.p1.x, e.p2.x
+            else:
+                a, b = e.p1.y, e.p2.y
+            intervals.append((min(a, b), max(a, b)))
+        return tuple(sorted(intervals))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ResolvedEdges1D):
+            return False
+        return (
+            self.name == other.name
+            and self.mesh_order == other.mesh_order
+            and self.keep == other.keep
+            and self.cut_by == other.cut_by
+            and (self.edges ^ other.edges).is_empty()
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.name, self.mesh_order, self.keep, self.cut_by, self.intervals))
+
+
+@dataclass(frozen=True)
+class ResolvedStackup1D:
+    """Output of the 1D slicers: one ``ResolvedEdges1D`` per source slot.
+
+    ``axis`` names the interval coordinate: ``"s"`` for a slice at fixed z
+    (intervals in arclength along the cutline), ``"z"`` for a slice at fixed
+    s (intervals in stackup height). ``coordinate`` is the fixed value of the
+    other axis, in µm. ``dbu`` converts interval ints to µm (multiply).
+    """
+
+    lines: tuple[ResolvedEdges1D, ...] = ()
+    dbu: float = 0.001
+    axis: Literal["s", "z"] = "s"
+    coordinate: float = 0.0
+
+    def apply_cuts(self) -> ResolvedStackup1D:
+        """Painter's algorithm as data — the 1D counterpart of
+        ``ResolvedStackup2D.apply_cuts`` with the identical contract:
+        subtract each slot's ``cut_by`` edges from its own (collinear
+        klayout edge subtraction, so a later slot that only touches removes
+        nothing), empty ``keep=False`` cutters (they have done their job),
+        clear ``cut_by`` (no cuts remain pending). The 1:1 slot indexing is
+        preserved and the operation is idempotent.
+        """
+        lines = []
+        for line in self.lines:
+            if not line.keep:
+                edges = kdb.Edges()
+            else:
+                edges = line.edges.dup()
+                for j in line.cut_by:
+                    edges -= self.lines[j].edges
+                edges = edges.merged()
+            lines.append(replace(line, edges=edges, cut_by=()))
+        return replace(self, lines=tuple(lines))
 
 
 def _build_synthetic_straight(
@@ -807,3 +1006,25 @@ def _loft_intervals(
             )
             region.insert(poly)
     return region
+
+
+def _line_slice_edges(region: kdb.Region, *, horizontal: bool, at: int) -> kdb.Edges:
+    """Intersect ``region`` with an axis-aligned line and return the merged
+    collinear edge set lying inside it, in absolute dbu coordinates.
+
+    ``horizontal=True``: line ``y = at``; ``horizontal=False``: line
+    ``x = at``. The probe edge spans the region bbox plus a small margin, so
+    the intersection covers the region's full extent. A line exactly on a
+    region boundary counts as inside (klayout edge∩region semantics), so
+    slice queries are closed-interval. ``merged()`` coalesces the touching
+    pieces that adjacent unmerged loft trapezoids produce.
+    """
+    if region.is_empty():
+        return kdb.Edges()
+    bbox = region.bbox()
+    margin = 2
+    if horizontal:
+        probe = kdb.Edge(kdb.Point(bbox.left - margin, at), kdb.Point(bbox.right + margin, at))
+    else:
+        probe = kdb.Edge(kdb.Point(at, bbox.bottom - margin), kdb.Point(at, bbox.top + margin))
+    return (kdb.Edges([probe]) & region).merged()

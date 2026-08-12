@@ -588,7 +588,12 @@ def test_resolve_single_key_zero_thickness_sheet_preserved():
 
 def test_top_level_exports():
     import gdswell as gw
-    from gdswell.stackup import ResolvedPolygon2D, ResolvedStackup2D
+    from gdswell.stackup import (
+        ResolvedEdges1D,
+        ResolvedPolygon2D,
+        ResolvedStackup1D,
+        ResolvedStackup2D,
+    )
     from gdswell.visualization import plot_cross_section
 
     assert gw.StackupEntry is StackupEntry
@@ -597,6 +602,8 @@ def test_top_level_exports():
     assert gw.ResolvedStackup is ResolvedStackup
     assert gw.ResolvedPolygon2D is ResolvedPolygon2D
     assert gw.ResolvedStackup2D is ResolvedStackup2D
+    assert gw.ResolvedEdges1D is ResolvedEdges1D
+    assert gw.ResolvedStackup1D is ResolvedStackup1D
     assert gw.plot_cross_section is plot_cross_section
 
 
@@ -1472,3 +1479,484 @@ def test_stackup_scale_z_empty_zero_factor_raises():
     # Spec: the factor==0 guard must fire even when there are no items to reach.
     with pytest.raises(ValueError, match="scale_z factor must be non-zero"):
         Stackup().scale_z(0.0)
+
+
+# ---- 1D slices: _line_slice_edges -----------------------------------------
+
+
+def _hedges(intervals, y=0):
+    """Horizontal collinear kdb.Edges at height y from (start, end) dbu tuples."""
+    return kdb.Edges([kdb.Edge(kdb.Point(a, y), kdb.Point(b, y)) for a, b in intervals])
+
+
+def _vedges(intervals, x=0):
+    """Vertical collinear kdb.Edges at position x from (start, end) dbu tuples."""
+    return kdb.Edges([kdb.Edge(kdb.Point(x, a), kdb.Point(x, b)) for a, b in intervals])
+
+
+def test_line_slice_horizontal_absolute_coordinates():
+    """Result edges carry absolute (s, z) coordinates of the slice plane.
+    Comparison is geometric: symmetric difference with the expected set."""
+    from gdswell.stackup import _line_slice_edges
+
+    region = kdb.Region(kdb.Box(1000, 500, 3000, 1500))
+    edges = _line_slice_edges(region, horizontal=True, at=700)
+    assert (edges ^ _hedges([(1000, 3000)], y=700)).is_empty()
+
+
+def test_line_slice_vertical_absolute_coordinates():
+    from gdswell.stackup import _line_slice_edges
+
+    region = kdb.Region(kdb.Box(1000, 500, 3000, 1500))
+    edges = _line_slice_edges(region, horizontal=False, at=1500)
+    assert (edges ^ _vedges([(500, 1500)], x=1500)).is_empty()
+
+
+def test_line_slice_on_boundary_is_inside():
+    """A line exactly on the region boundary returns the full interval
+    (klayout edge∩region counts border edges as inside) — closed intervals."""
+    from gdswell.stackup import _line_slice_edges
+
+    region = kdb.Region(kdb.Box(0, 0, 2000, 1000))
+    at_bottom = _line_slice_edges(region, horizontal=True, at=0)
+    at_top = _line_slice_edges(region, horizontal=True, at=1000)
+    assert (at_bottom ^ _hedges([(0, 2000)], y=0)).is_empty()
+    assert (at_top ^ _hedges([(0, 2000)], y=1000)).is_empty()
+
+
+def test_line_slice_misses_region():
+    from gdswell.stackup import _line_slice_edges
+
+    region = kdb.Region(kdb.Box(0, 0, 2000, 1000))
+    assert _line_slice_edges(region, horizontal=True, at=5000).is_empty()
+    assert _line_slice_edges(region, horizontal=False, at=-500).is_empty()
+
+
+def test_line_slice_empty_region():
+    from gdswell.stackup import _line_slice_edges
+
+    assert _line_slice_edges(kdb.Region(), horizontal=True, at=0).is_empty()
+
+
+def test_line_slice_merges_touching_pieces_from_unmerged_region():
+    """A vertical line through two stacked unmerged polygons (the shape
+    _loft_intervals produces for multi-z-key entries) yields ONE merged
+    edge, not two touching pieces (count pins the merge; XOR alone would
+    accept either representation)."""
+    from gdswell.stackup import _line_slice_edges
+
+    region = kdb.Region()
+    region.insert(
+        kdb.Polygon(
+            [
+                kdb.Point(0, 0),
+                kdb.Point(1000, 0),
+                kdb.Point(1000, 500),
+                kdb.Point(0, 500),
+            ]
+        )
+    )
+    region.insert(
+        kdb.Polygon(
+            [
+                kdb.Point(0, 500),
+                kdb.Point(1000, 500),
+                kdb.Point(1000, 900),
+                kdb.Point(0, 900),
+            ]
+        )
+    )
+    edges = _line_slice_edges(region, horizontal=False, at=500)
+    assert edges.count() == 1
+    assert (edges ^ _vedges([(0, 900)], x=500)).is_empty()
+
+
+# ---- 1D slices: dataclasses -----------------------------------------------
+
+
+def test_resolved_edges_1d_defaults_and_frozen():
+    from gdswell.stackup import ResolvedEdges1D
+
+    line = ResolvedEdges1D(name="A", edges=_hedges([(0, 100)]), mesh_order=0)
+    assert line.keep is True
+    assert line.cut_by == ()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        line.name = "B"  # type: ignore[misc]
+
+
+def test_resolved_edges_1d_intervals_property():
+    """Scalar extraction is canonical: merged (touching/overlapping pieces
+    coalesce), sorted, orientation-independent; vertical edges read y."""
+    from gdswell.stackup import ResolvedEdges1D
+
+    messy = ResolvedEdges1D(
+        name="A",
+        edges=_hedges([(1100, 1200), (0, 500), (400, 900), (1000, 1100)]),
+        mesh_order=0,
+    )
+    assert messy.intervals == ((0, 900), (1000, 1200))
+
+    reversed_edge = ResolvedEdges1D(
+        name="A",
+        edges=kdb.Edges([kdb.Edge(kdb.Point(500, 0), kdb.Point(100, 0))]),
+        mesh_order=0,
+    )
+    assert reversed_edge.intervals == ((100, 500),)
+
+    vertical = ResolvedEdges1D(name="A", edges=_vedges([(0, 220)], x=700), mesh_order=0)
+    assert vertical.intervals == ((0, 220),)
+
+    empty = ResolvedEdges1D(name="A", edges=kdb.Edges(), mesh_order=0)
+    assert empty.intervals == ()
+
+
+def test_resolved_edges_1d_value_equality():
+    """Equality is geometric (XOR-emptiness), robust to edge ordering,
+    orientation, and split representation — unlike klayout's identity ==."""
+    from gdswell.stackup import ResolvedEdges1D
+
+    a = ResolvedEdges1D(name="A", edges=_hedges([(0, 500), (600, 900)]), mesh_order=0)
+    b = ResolvedEdges1D(name="A", edges=_hedges([(600, 900), (0, 500)]), mesh_order=0)
+    split = ResolvedEdges1D(
+        name="A", edges=_hedges([(0, 250), (250, 500), (600, 900)]), mesh_order=0
+    )
+    other = ResolvedEdges1D(name="A", edges=_hedges([(0, 501), (600, 900)]), mesh_order=0)
+    renamed = ResolvedEdges1D(name="B", edges=_hedges([(0, 500), (600, 900)]), mesh_order=0)
+    assert a == b
+    assert a == split
+    assert a != other
+    assert a != renamed
+    assert a != "not a line"
+    assert hash(a) == hash(b) == hash(split)
+
+
+def test_resolved_stackup_1d_defaults_frozen_and_equality():
+    from gdswell.stackup import ResolvedEdges1D, ResolvedStackup1D
+
+    rs1 = ResolvedStackup1D()
+    assert rs1.lines == ()
+    assert rs1.dbu == 0.001
+    assert rs1.axis == "s"
+    assert rs1.coordinate == 0.0
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        rs1.dbu = 0.002  # type: ignore[misc]
+    # Container equality delegates to the lines' geometric equality.
+    x = ResolvedStackup1D(
+        lines=(ResolvedEdges1D(name="A", edges=_hedges([(0, 500)]), mesh_order=0),)
+    )
+    y = ResolvedStackup1D(
+        lines=(ResolvedEdges1D(name="A", edges=_hedges([(0, 500)]), mesh_order=0),)
+    )
+    assert x == y
+
+
+# ---- 1D slices: ResolvedStackup2D.slice_at_z / slice_at_s -----------------
+
+
+def _two_square_stack_2d():
+    """resolve_cutline over both squares: horizontal cutline y=0.5 from x=-1
+    to x=4, so WG spans s=1000..2000 and CLAD spans s=3000..4000 (dbu)."""
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    clad = StackupEntry.uniform("Clad", PDK.CLAD, 0.0, 0.5)
+    return (si + clad).resolve_cutline(cell, ((-1.0, 0.5), (4.0, 0.5)))
+
+
+def test_slice_at_z_basic_intervals_and_metadata():
+    from gdswell.stackup import ResolvedStackup1D
+
+    rs1 = _two_square_stack_2d().slice_at_z(0.1)
+    assert isinstance(rs1, ResolvedStackup1D)
+    assert rs1.axis == "s"
+    assert rs1.coordinate == 0.1
+    assert rs1.dbu == 0.001
+    assert [ln.name for ln in rs1.lines] == ["Si", "Clad"]
+    assert [ln.mesh_order for ln in rs1.lines] == [0, 1]
+    assert rs1.lines[0].intervals == ((1000, 2000),)
+    assert rs1.lines[1].intervals == ((3000, 4000),)
+    # Disjoint on this line → no cut_by edge despite both being present.
+    assert rs1.lines[0].cut_by == ()
+
+
+def test_slice_at_z_above_stack_all_empty():
+    rs1 = _two_square_stack_2d().slice_at_z(5.0)
+    assert all(ln.intervals == () for ln in rs1.lines)
+
+
+def test_slice_at_z_boundary_closed_interval():
+    """Slicing exactly at an entry's zmin/zmax returns its interval."""
+    rs1 = _two_square_stack_2d().slice_at_z(0.0)
+    assert rs1.lines[0].intervals == ((1000, 2000),)
+    rs1 = _two_square_stack_2d().slice_at_z(0.22)
+    assert rs1.lines[0].intervals == ((1000, 2000),)
+
+
+def test_slice_at_z_slanted_sidewall_interpolates():
+    """A z-varying entry (50 nm inset at the top) sliced midway shows the
+    linearly interpolated bounds, exactly as the trapezoid loft defines."""
+    cell = _cell_with_two_squares()
+    rib = StackupEntry("Rib", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
+    rs2 = Stackup.of(rib).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
+    rs1 = rs2.slice_at_z(0.11)
+    # At z=0: s in (1000, 2000); at z=0.22: (1050, 1950); midway: (1025, 1975).
+    assert rs1.lines[0].intervals == ((1025, 1975),)
+
+
+def test_slice_at_s_z_extents():
+    """Vertical slice through the WG square only."""
+    rs1 = _two_square_stack_2d().slice_at_s(1.5)
+    assert rs1.axis == "z"
+    assert rs1.coordinate == 1.5
+    assert rs1.lines[0].intervals == ((0, 220),)  # Si: z 0..0.22 µm
+    assert rs1.lines[1].intervals == ()  # Clad square not at this s
+    assert rs1.lines[0].cut_by == ()
+
+
+def test_slice_at_s_overlapping_entries_cut_by():
+    """Two entries on the same footprint → genuine 1D overlap → cut_by edge."""
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.3)
+    b = StackupEntry.uniform("B", PDK.WG, 0.2, 0.5)
+    rs2 = (a + b).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
+    rs1 = rs2.slice_at_s(1.5)
+    assert rs1.lines[0].intervals == ((0, 300),)
+    assert rs1.lines[1].intervals == ((200, 500),)
+    assert rs1.lines[0].cut_by == (1,)
+    assert rs1.lines[1].cut_by == ()
+
+
+def test_slice_at_s_touching_entries_no_cut_by():
+    """Entries that only touch (one ends where the other begins) get NO
+    cut_by edge: a touching cut subtracts zero measure, and interfaces are
+    recoverable from the uncut lines."""
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.2)
+    b = StackupEntry.uniform("B", PDK.WG, 0.2, 0.5)
+    rs1 = (a + b).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5))).slice_at_s(1.5)
+    assert rs1.lines[0].intervals == ((0, 200),)
+    assert rs1.lines[1].intervals == ((200, 500),)
+    assert rs1.lines[0].cut_by == ()
+
+
+def test_slice_multi_z_key_entry_merges_z_intervals():
+    """A 3-z-key entry lofts to stacked trapezoids; a z-line through them
+    reports ONE merged interval."""
+    cell = _cell_with_two_squares()
+    tri = StackupEntry("Tri", {0.0: PDK.WG, 0.1: PDK.WG, 0.3: PDK.WG})
+    rs2 = Stackup.of(tri).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
+    rs1 = rs2.slice_at_s(1.5)
+    assert rs1.lines[0].intervals == ((0, 300),)
+
+
+def test_slice_keep_false_slot_retained():
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.3)
+    m = StackupEntry.uniform("M", PDK.WG, 0.1, 0.2)
+    rs1 = (a - m).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5))).slice_at_s(1.5)
+    assert [ln.keep for ln in rs1.lines] == [True, False]
+    assert rs1.lines[1].intervals == ((100, 200),)
+    assert rs1.lines[0].cut_by == (1,)
+
+
+def test_slice_zero_thickness_entry_empty():
+    """Single-z-key sheets are empty in the 2D loft, hence in 1D slices."""
+    cell = _cell_with_two_squares()
+    sheet = StackupEntry("Sheet", {0.1: PDK.WG})
+    rs2 = Stackup.of(sheet).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
+    assert rs2.slice_at_z(0.1).lines[0].intervals == ()
+    assert rs2.slice_at_s(1.5).lines[0].intervals == ()
+
+
+# ---- 1D slices: apply_cuts -------------------------------------------------
+
+
+def _line1d(name, order, intervals, keep=True, cut_by=()):
+    from gdswell.stackup import ResolvedEdges1D
+
+    return ResolvedEdges1D(
+        name=name, edges=_hedges(intervals), mesh_order=order, keep=keep, cut_by=cut_by
+    )
+
+
+def test_apply_cuts_1d_later_entry_wins():
+    from gdswell.stackup import ResolvedStackup1D
+
+    rs1 = ResolvedStackup1D(
+        lines=(_line1d("A", 0, [(0, 1000)], cut_by=(1,)), _line1d("B", 1, [(400, 600)]))
+    )
+    cut = rs1.apply_cuts()
+    assert cut.lines[0].intervals == ((0, 400), (600, 1000))
+    assert cut.lines[1].intervals == ((400, 600),)
+    assert all(ln.cut_by == () for ln in cut.lines)
+    assert [ln.name for ln in cut.lines] == ["A", "B"]  # 1:1 indexing kept
+
+
+def test_apply_cuts_1d_cutter_emptied_but_kept():
+    from gdswell.stackup import ResolvedStackup1D
+
+    rs1 = ResolvedStackup1D(
+        lines=(
+            _line1d("A", 0, [(0, 1000)], cut_by=(1,)),
+            _line1d("M", 1, [(400, 600)], keep=False),
+        )
+    )
+    cut = rs1.apply_cuts()
+    assert cut.lines[0].intervals == ((0, 400), (600, 1000))
+    assert [ln.keep for ln in cut.lines] == [True, False]
+    assert cut.lines[1].intervals == ()  # cutter has done its job
+
+
+def test_apply_cuts_1d_touching_removes_nothing():
+    from gdswell.stackup import ResolvedStackup1D
+
+    rs1 = ResolvedStackup1D(
+        lines=(_line1d("A", 0, [(0, 500)], cut_by=(1,)), _line1d("B", 1, [(500, 900)]))
+    )
+    cut = rs1.apply_cuts()
+    assert cut.lines[0].intervals == ((0, 500),)
+
+
+def test_apply_cuts_1d_idempotent():
+    from gdswell.stackup import ResolvedStackup1D
+
+    rs1 = ResolvedStackup1D(
+        lines=(_line1d("A", 0, [(0, 1000)], cut_by=(1,)), _line1d("B", 1, [(400, 600)]))
+    )
+    once = rs1.apply_cuts()
+    assert once.apply_cuts() == once  # value equality via geometric edge comparison
+
+
+def test_apply_cuts_1d_chained_cut_graph():
+    """Three-slot chain: A loses to B and C, B loses to C — the material
+    profile interleaves accordingly (walked via per-slot intervals)."""
+    from gdswell.stackup import ResolvedStackup1D
+
+    rs1 = ResolvedStackup1D(
+        lines=(
+            _line1d("A", 0, [(0, 1000)], cut_by=(1, 2)),
+            _line1d("B", 1, [(100, 200)], cut_by=(2,)),
+            _line1d("C", 2, [(150, 300)]),
+        )
+    )
+    cut = rs1.apply_cuts()
+    assert cut.lines[0].intervals == ((0, 100), (300, 1000))
+    assert cut.lines[1].intervals == ((100, 150),)
+    assert cut.lines[2].intervals == ((150, 300),)
+    # The docs' ordered-profile idiom over this output:
+    profile = sorted((a, b, ln.name) for ln in cut.lines if ln.keep for a, b in ln.intervals)
+    assert profile == [(0, 100, "A"), (100, 150, "B"), (150, 300, "C"), (300, 1000, "A")]
+
+
+def test_apply_cuts_1d_empty():
+    from gdswell.stackup import ResolvedStackup1D
+
+    assert ResolvedStackup1D().apply_cuts() == ResolvedStackup1D()
+
+
+# ---- unified painter's cuts: ResolvedStackup2D.apply_cuts -----------------
+
+
+def test_apply_cuts_2d_subtracts_later_overlaps():
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.3)
+    b = StackupEntry.uniform("B", PDK.WG, 0.2, 0.5)
+    rs2 = (a + b).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
+    cut = rs2.apply_cuts()
+    # A (z 0..0.3) loses its overlap with the later B (z 0.2..0.5).
+    assert cut.polygons[0].region.bbox() == kdb.Box(1000, 0, 2000, 200)
+    assert cut.polygons[1].region.bbox() == kdb.Box(1000, 200, 2000, 500)
+    assert all(p.cut_by == () for p in cut.polygons)
+    assert [p.name for p in cut.polygons] == ["A", "B"]  # 1:1 indexing kept
+
+
+def test_apply_cuts_2d_cutter_emptied_but_kept():
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.3)
+    m = StackupEntry.uniform("M", PDK.WG, 0.1, 0.2)
+    cut = (a - m).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5))).apply_cuts()
+    assert [p.keep for p in cut.polygons] == [True, False]
+    assert cut.polygons[1].region.is_empty()  # cutter has done its job
+    # A is carved into two slabs (z 0..0.1 and 0.2..0.3): bbox unchanged,
+    # area reduced by the 1000×100 dbu bite.
+    assert cut.polygons[0].region.bbox() == kdb.Box(1000, 0, 2000, 300)
+    assert cut.polygons[0].region.area() == 1000 * 200
+
+
+def test_apply_cuts_2d_idempotent():
+    rs2 = _two_square_stack_2d()
+    once = rs2.apply_cuts()
+    twice = once.apply_cuts()
+    for p1, p2 in zip(once.polygons, twice.polygons):
+        assert (p1.region ^ p2.region).is_empty()  # geometric equality
+
+
+def test_apply_cuts_2d_commutes_with_1d_slice_at_generic_z():
+    """slice(apply_cuts(2D)) and apply_cuts(slice(2D)) agree away from cut
+    seams (compared on intervals; the two paths differ in cut_by
+    bookkeeping, and exactly ON a seam the closed-interval slice of the cut
+    region still sees the boundary while the 1D subtraction removes it)."""
+    cell = _cell_with_two_squares()
+    a = StackupEntry.uniform("A", PDK.WG, 0.0, 0.3)
+    b = StackupEntry.uniform("B", PDK.WG, 0.2, 0.5)
+    rs2 = (a + b).resolve_cutline(cell, ((-1.0, 0.5), (2.0, 0.5)))
+    for z in (0.1, 0.25, 0.4):
+        via_2d = rs2.apply_cuts().slice_at_z(z)
+        via_1d = rs2.slice_at_z(z).apply_cuts()
+        assert [ln.intervals for ln in via_2d.lines] == [ln.intervals for ln in via_1d.lines]
+
+
+# ---- 1D slices: Stackup.resolve_xyline / resolve_zline --------------------
+
+
+def test_resolve_xyline_equals_manual_slice():
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    clad = StackupEntry.uniform("Clad", PDK.CLAD, 0.0, 0.5)
+    stack = si + clad
+    cutline = ((-1.0, 0.5), (4.0, 0.5))
+    direct = stack.resolve_xyline(cell, cutline, z=0.1)
+    manual = stack.resolve_cutline(cell, cutline).slice_at_z(0.1)
+    assert direct == manual  # value equality via geometric edge comparison
+    assert direct.lines[0].intervals == ((1000, 2000),)
+
+
+def test_resolve_zline_point_inside_entry():
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    rs1 = Stackup.of(si).resolve_zline(cell, (0.5, 0.5))
+    assert rs1.axis == "z"
+    assert rs1.lines[0].intervals == ((0, 220),)
+
+
+def test_resolve_zline_point_outside_entry_empty():
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    rs1 = Stackup.of(si).resolve_zline(cell, (10.0, 10.0))
+    assert rs1.lines[0].intervals == ()
+
+
+def test_resolve_zline_direction_invariant_for_vertical_sidewalls():
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    stack = Stackup.of(si)
+    along_x = stack.resolve_zline(cell, (0.5, 0.5), direction=(1.0, 0.0))
+    along_y = stack.resolve_zline(cell, (0.5, 0.5), direction=(0.0, 1.0))
+    assert [ln.intervals for ln in along_x.lines] == [ln.intervals for ln in along_y.lines]
+
+
+def test_resolve_zline_zero_direction_raises():
+    cell = _cell_with_two_squares()
+    si = StackupEntry.uniform("Si", PDK.WG, 0.0, 0.22)
+    with pytest.raises(ValueError, match="direction"):
+        Stackup.of(si).resolve_zline(cell, (0.5, 0.5), direction=(0.0, 0.0))
+
+
+def test_resolve_zline_apply_cuts_material_column():
+    """End-to-end: a clad-over-core column at a point, reduced to the final
+    material stack (core cuts the clad interval)."""
+    cell = _cell_with_two_squares()
+    clad = StackupEntry.uniform("Clad", PDK.WG, 0.0, 1.0)
+    core = StackupEntry.uniform("Core", PDK.WG, 0.0, 0.22)
+    cut = (clad + core).resolve_zline(cell, (0.5, 0.5)).apply_cuts()
+    assert cut.lines[0].intervals == ((220, 1000),)  # Clad minus Core
+    assert cut.lines[1].intervals == ((0, 220),)  # Core wins below
