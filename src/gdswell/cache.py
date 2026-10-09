@@ -28,6 +28,9 @@ def save_to_disk_cache(
     # Use SaveLayoutOptions to save only this cell and its dependencies
     # This is much faster than creating a temp layout and copying via Python
     options = kdb.SaveLayoutOptions()
+    options.format = "OASIS"
+    options.oasis_compression_level = 0
+    options.oasis_write_cblocks = False
     options.add_cell(cell.kdb.cell_index())
 
     # Atomic write: write to temp file then rename
